@@ -32,6 +32,40 @@ header-includes:
 - \usepackage{xcolor}
 ---
 
+
+```{r, echo=FALSE, warning=FALSE}
+install.packages(c(
+  "tidyverse", 
+  "caret", 
+  "data.table", 
+  "kableExtra", 
+  "lubridate", 
+  "Matrix", 
+  "DT", 
+  "wordcloud", 
+  "RColorBrewer", 
+  "ggthemes", 
+  "irlba", 
+  "recommenderlab", 
+  "reticulate", 
+  "h2o", 
+  "plyr", 
+  "dplyr", 
+  "reshape2", 
+  "stringr", 
+  "ggplot2", 
+  "keras", 
+  "glue", 
+  "mlbench", 
+  "microbenchmark", 
+  "magrittr", 
+  "neuralnet", 
+  "sparklyr", 
+  "keras",
+  "tictoc"
+))
+```
+
 ```{r, echo=FALSE, warning=FALSE}
  library(knitr)
   opts_chunk$set(fig.path='figure/graphics-', 
