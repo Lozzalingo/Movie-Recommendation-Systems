@@ -1,0 +1,3086 @@
+---
+title: "Movie Recommendation Systems: An Overview and Analysis"
+author: "Laurence Stephan"
+date: "September 2024"
+
+output:
+  pdf_document:
+    keep_tex: yes
+    latex_engine: xelatex
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+    fig_caption: yes
+urlcolor: blue
+linkcolor: red
+header-includes:
+  
+- \usepackage{graphicx}
+- \usepackage{float}
+- \usepackage{booktabs}
+- \usepackage{longtable}
+- \usepackage{array}
+- \usepackage{multirow}
+- \usepackage{wrapfig}
+- \usepackage{colortbl}
+- \usepackage{pdflscape}
+- \usepackage{tabu}
+- \usepackage{threeparttable}
+- \usepackage{threeparttablex}
+- \usepackage[normalem]{ulem}
+- \usepackage{makecell}
+- \usepackage{xcolor}
+---
+
+```{r, echo=FALSE, warning=FALSE}
+ library(knitr)
+  opts_chunk$set(fig.path='figure/graphics-', 
+                 cache.path='cache/graphics-', 
+                 fig.align='center',
+                 external=TRUE,
+                 echo=TRUE,
+                 warning=FALSE,
+                 fig.pos='H'
+                )
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# Load the configuration file.
+source("config.R")
+
+# Use the variable from the config file.
+#remove all # (comments)
+knitr::opts_chunk$set(comment = NA)
+```
+
+```{r, echo=FALSE, include=FALSE, eval=FALSE}
+# Check if the directory exists.
+if (!dir.exists(workingDirectory)) {
+  cat("Directory does not exist. Creating directory...\n")
+  dir.create(workingDirectory, recursive = TRUE)
+  knitr::opts_knit$set(root.dir = workingDirectory)
+} else {
+  cat("Directory exists.\n")
+}
+```
+
+```{r, echo=FALSE, include=FALSE}
+# Store the default output hook, so I can fall back to it later if needed.
+default_output_hook <- knitr::knit_hooks$get("output")
+
+# Set a custom output hook to modify how R console output is handled.
+knitr::knit_hooks$set(output = function(x, options) {
+  comment <- knitr::opts_current$get("comment")
+  if (is.na(comment)) comment <- ""
+  
+  can_null <- grepl(paste0(comment, "\\s*\\[\\d?\\]"), x, perl = TRUE)
+  do_null <- isTRUE(knitr::opts_current$get("null_prefix"))
+  
+  if (can_null && do_null) {
+    align_index <- regexpr("\\]", x)[1] - 1
+    
+    # Remove prefix at the start of a line.
+    regex <- paste0("^.{", align_index, "}\\]")
+    replacementString <- comment
+    x <- gsub(regex, replacementString, x)
+    
+    # Remove prefix after a newline.
+    regex <- paste0("\\\n.{", align_index, "}\\]")
+    replacementString <- paste0("\n", comment)
+    x <- gsub(regex, replacementString, x)
+  }
+  
+  # Pass modified output to the default handler.
+  default_output_hook(x, options)
+})
+
+# Create an options template called "kill_prefix" that removes numeric prefixes in output.
+knitr::opts_template$set("kill_prefix"=list(comment=NA, null_prefix=TRUE))
+```
+
+\newpage
+
+# Introduction
+
+A recommendation system employs machine learning algorithms to analyse past user data, with the aim of predicting a user's preferences for future or unobserved data. Within the context of movie recommendations, the system utilises user rating, and movie rating data to generate predictions for unseen movies or users. The primary categories of ML algorithms commonly applied in movie recommendations are content-based filtering and collaborative filtering systems. 
+
+Content-based filtering recommends similar content to a user, drawing from their past interactions. Collaborative filtering recommends content highly rated by users with comparable profiles, relying on similar past ratings for overlapping movies. Additionally, collaborative filtering algorithms are further categorised into two distinct types: User-based collaborative filtering, which seeks analogous patterns in movie preferences between the target user and others within the database, and Item-based collaborative filtering, which revolves around identifying similar items (in this case movies) that the target users have rated or interacted with.
+
+Developing a movie recommendation system follows several critical stages. The process begins with acquiring relevant data, which can be sourced from various online platforms—either freely available, scraped from the web, or purchased from third-party providers. For this report, I utilised the MovieLens 10M and 100k data sets from GroupLens.org. Once the data was acquired, it underwent comprehensive analysis to extract meaningful insights and to understand how best to manipulate and structure the data for further refinement.
+
+With a focus on collaborative filtering models, multiple models were trained, evaluated, and compared based on key metrics, including margin of error, training time, and storage efficiency. The best-performing model was selected for further optimisation, aiming to achieve the highest accuracy with the least resource consumption. Finally, the optimised model was used to predict a randomly selected user's rating preferences for unseen movies.
+
+Tailoring content to match users' preferences, interests, and behaviours has become crucial for businesses seeking to offer superior service. By delivering personalised recommendations, businesses can enhance engagement and drive greater value, often outpacing their competitors. Machine learning algorithms play a key role in systems that use data to optimise their offerings. Leading companies such as Spotify, Amazon, Disney+, and Netflix employ such algorithms to provide personalised suggestions for their users. In 2006, Netflix famously launched a competition, offering a $1 million prize to the team that could most significantly improve the accuracy of their recommendation system. This competition elevated the field's profile, leading to the development and popularisation of many new algorithms in Data Science.
+
+This report compares a variety of recommendation models, using 10 million ratings from the MovieLens data set provided by the GroupLens research lab. Notably, a neural network with a simplified dot product model and a matrix factorisation approach using stochastic gradient descent performed best, as measured by Root Mean Squared Error (RMSE) on test and training sets. However, Alternating Least Squares and linear regression models also delivered competitive results, while requiring fewer resources.
+
+Broadly speaking, recommendation systems face two primary challenges. The first is known as the ranking problem, which involves ranking and recommending items based on known user data, such as past interactions. For instance, factors like actors, release dates, and genres that a user has previously rated favourably are used to generate recommendations. The second challenge, and the focus of this report, is the matrix completion problem. This challenge involves predicting missing data points within a matrix by analysing rating patterns across observed data. For example, if a group of users have historically shown similar rating patterns for a subset of movies they’ve watched, it’s reasonable to infer that if the group rates a movie that one user hasn’t yet seen, their ratings would likely be similar. By leveraging this insight, we can recommend highly-rated movies from users with comparable profiles to those who haven't rated the movie yet, anticipating a similar rating and potential enjoyment.
+
+\pagebreak
+
+# Exploring the data
+
+## Data Overview
+
+`Load libraries and data`
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Increase JVM memory limit to 8GB for Java-based processes. 
+options(java.parameters = "-Xmx8g")
+
+# Load libraries.
+library(tidyverse)
+library(caret)
+library(data.table)
+library(kableExtra)
+library(lubridate)
+library(Matrix)
+library(DT)
+library(wordcloud)
+library(RColorBrewer)
+library(ggthemes)
+library(irlba)
+library(recommenderlab)
+library(recosystem)
+library(reticulate)
+library(h2o)
+require(data.table)
+require(foreach)
+library(neuralnet)
+# Load 'plyr' first, then 'dplyr' to prevent function conflicts.
+# This ensures that 'dplyr' functions (like summarise, mutate, etc.) override those in 'plyr'.
+library(plyr); library(dplyr)
+require(reshape2)
+library(stringr)
+library(ggplot2)
+library(keras)
+library(tidyverse)
+library(glue)
+library(mlbench)
+library(microbenchmark)
+library(magrittr)
+library(neuralnet)
+library(sparklyr)
+library(tictoc)
+source(SlopeOne)
+library(gridExtra)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Load Movielens File.
+ratings_file <- file.path(workingDirectory, "ml-10M100K", "ratings.dat")
+movies_file <- file.path(workingDirectory, "ml-10M100K", "movies.dat")
+
+# Read the lines from the ratings data file, split them on ::, and convert the data into a data frame.
+ratings <- as.data.frame(str_split(read_lines(ratings_file), fixed("::"), simplify = TRUE),
+  stringsAsFactors = FALSE
+)
+
+# Label the columns of the ratings dataframe.
+colnames(ratings) <- c("userId", "movieId", "rating", "timestamp")
+
+# Convert the ratings data into numeric values.
+ratings <- ratings %>%
+  mutate(
+    userId = as.integer(userId),
+    movieId = as.integer(movieId),
+    rating = as.numeric(rating),
+    timestamp = as.integer(timestamp)
+  )
+
+# Read the lines from the movies data file, split them on ::, and convert the data into a data frame.
+movies <- as.data.frame(str_split(read_lines(movies_file), fixed("::"), simplify = TRUE),
+  stringsAsFactors = FALSE
+)
+
+# Label the columns of the movies dataframe.
+colnames(movies) <- c("movieId", "title", "genres")
+
+# Convert the movies data into numeric values.
+movies <- movies %>%
+  mutate(movieId = as.integer(movieId))
+
+# Combine the dataframes using the movieID.
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Final hold-out test set will be 10% of MovieLens data.
+set.seed(42, sample.kind = "Rounding")
+
+# Create a data partition using 10% of the data and return a vector.
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+
+# Create the training set using rows where the indices are not in test_index.
+edx <- movielens[-test_index, ]
+
+# Create the test set using rows where the indices are in test_index.
+temp <- movielens[test_index, ]
+
+# Use semi_join to create a variable with the rows from the original temp dataframe and those that have matching values in both the "movieId" and "userId" columns from the edx dataframe.
+final_holdout_test <- temp %>%
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from final hold-out test set back into edx set.
+removed <- anti_join(temp, final_holdout_test)
+edx <- rbind(edx, removed)
+
+# Remove objects from the global environment.
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+```{r, echo=FALSE, comment=NA, null_prefix=TRUE}
+'training data'
+glimpse(edx)
+```
+```{r, echo=FALSE, comment=NA, null_prefix=TRUE}
+'testing data'
+glimpse(final_holdout_test)
+```
+$\\ \\$
+The training set has 9,000,061 rows, and contains approximately 90% of the data. The testing set has 999,993 rows and contains approximately 10% of the data. Each set has 6 variables, represented by each column. The userID variable represents a unique number assigned to a specific user profile. The movieId variable represents a unique number assigned to a specific movie. The rating variable represents a score about a movie given by a user, on a rating scale of 1-5, where 1 represents a low score and 5 represents a high score. The timestamp variable is a record of the date and time a rating for a movie was submitted by a user. The title variable represents the name the movie was released under in North America, and the genre variable represents the genre of the movie as defined by the MovieLens community. Although the same unique variables may show up across multiple rows, there will only ever be one row with the same userId and movieId, representing a distinct rating for that movie by that user. The userID, movieID, timestamp and rating variables are discrete, whereas the title and genre variables are nominal. The models developed and tested in this report will focus on predicting rating as a dependent variable, with userId and movieId as the independent variables, which is typical of a collaborative filtering system. Timestamp, title and genre will not be considered when building the predictive models; however, they are datatypes that prove useful for other types of models such as content-based filtering systems, and will therefore be discussed and explored at a high level.
+
+\pagebreak
+
+## Exploring The Data 
+
+An initial investigation of each variable was performed to gain a strong understanding of the data. 
+```{r, echo=FALSE, null_prefix =TRUE}
+# Create a variable that groups ratings by whole or half-star values.
+ratings_group <- ifelse(edx$rating %in% 1:5, "Whole Star", "Half Star")
+
+# Create a dataframe of ratings and rating groups.
+ratings_df <- data.frame(rating = edx$rating, ratings_group)
+
+# Plot a histogram of whole and half ratings against their volume.
+ggplot(ratings_df, aes(x = rating, fill = ratings_group)) +
+  geom_histogram(binwidth = .5, color = "white", alpha = 0.7) +
+  scale_x_continuous(breaks = seq(0, 5, by = 0.5)) +
+  scale_fill_manual(values = c("Half Star" = "#533dfc", "Whole Star" = "#3ddffc")) +
+  labs(x = "Rating", y = "Number of Ratings", caption = "Source Data: edx set") +
+  ggtitle("Rating by Number of Ratings") +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 10)
+  ) +
+  labs(caption = "Source Data: testing data") 
+```
+
+
+
+A visual representation of the rating data shows that full star ratings are much more common than half star ratings. It also shows that people tend to leave higher ratings over lower ones, with the mode being 4 stars. Such findings suggest that people may be biased towards choosing whole numbers over fractions, and more likely to express positive feelings over negative ones. While this will have a small effect on a recommendation systems accuracy, it does raise the question whether rating scales that use fractions, or rating scales in general serve as a good estimators for accurately representing ratings.
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Split movie genres using regular expression and arrange them by their count.
+top_genres <- edx %>%
+  separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  dplyr::summarize(count = n()) %>%
+  dplyr::arrange(desc(count))
+
+# Separate the movie year from the movie title.
+edx_title_year <- edx %>%
+  mutate(
+    year = gsub("\\(|\\)", "", regmatches(title, regexpr("\\(\\d{4}\\)", title))),
+    title = sub("\\s*\\(\\d{4}\\)", "", title)
+  )
+
+final_holdout_year <- final_holdout_test %>%
+  mutate(
+    year = gsub("\\(|\\)", "", regmatches(title, regexpr("\\(\\d{4}\\)", title))),
+    title = sub("\\s*\\(\\d{4}\\)", "", title)
+  )
+
+# Group the movies by their release year and arrange by the highest count.
+top_years <- edx_title_year %>%
+  group_by(year) %>%
+  dplyr::summarize(count = n()) %>%
+  dplyr::arrange(desc(count))
+
+# Group the movies by their title and arrange by the highest count.
+top_titles <- edx_title_year %>%
+  group_by(title) %>%
+  dplyr::summarize(count = n()) %>%
+  dplyr::arrange(desc(count))
+```
+
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Filter top 5 rows
+top_genres <- head(top_genres, 5)
+
+# Top Genres Table
+kable(
+  top_genres,
+  format = "latex",
+  booktabs = TRUE
+) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position", "scale_down"),
+    position = "center",
+    full_width = FALSE
+  ) %>%
+  add_header_above(c("Top Genres Summary" = ncol(top_genres))) %>%
+  column_spec(1:ncol(top_genres), width = "10cm")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Filter top 5 rows
+top_years <- head(top_years, 5)
+
+# Top Years Table
+kable(
+  top_years,
+  format = "latex",
+  booktabs = TRUE,
+) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position", "scale_down"),
+    position = "center",
+    full_width = FALSE
+  ) %>%
+  add_header_above(c("Top Years Summary" = ncol(top_years))) %>%
+  column_spec(1:ncol(top_genres), width = "10cm")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Filter top 5 rows
+top_titles <- head(top_titles, 5)
+
+# Top Titles Table
+kable(
+  top_titles,
+  format = "latex",
+  booktabs = TRUE,
+) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position", "scale_down"),
+    position = "center",
+    full_width = FALSE
+  ) %>%
+  add_header_above(c("Top Titles Summary" = ncol(top_titles))) %>%
+  column_spec(1:ncol(top_genres), width = "10cm")
+```
+$\\ \\$
+The tables group the data by genre, year, and title, and then order them in descending order based on the amount of ratings they've received. This should act as a good indicator of how many people have watched a movie with a specific title, released in a specific year, or released within a specific genre. Understanding which variables receive the most ratings gives us a heading for making decisions about the future. However, a word of caution should be added: In order to make the data more meaningful, the ratings count should be weighted by website traffic, the volume of movies released in a year, and the amount of time the movie has been available to receive ratings. This would account for a more accurate indicator of how many people watched a movie because not everyone will use MovieLens to rate a movie, meaning that the amount of ratings a movie receives might be a direct result of how popular MovieLens is at the time, compared to the movie itself. Moreover, the longer a movie has been online, the more time it's had to accrue ratings, and the amount of movies released in a year may create a bias that makes that year seem more popular, meaning the amount of ratings should be scaled relative to both the popularity of MovieLens at the time, the volumes of movies released in a year, and the amount of time the movie has been open to ratings. This analysis is beyond the scope of this project, but could serve as an insightful avenue for future research.
+$\\ \\$
+```{r, echo=FALSE, null_prefix =TRUE}
+# Extract the top 20 movies based on the number of ratings.
+top_title <- edx %>%
+  group_by(title) %>%
+  dplyr::summarize(count = n()) %>%
+  top_n(20, count) %>%
+  dplyr::arrange(desc(count))
+
+# Create a bar plot using ggplot2 to visualise the top 20 movies based on ratings.
+top_title %>%
+  ggplot(aes(x = reorder(title, count), y = count)) +
+  geom_bar(stat = "identity", fill = "#3ddffc") +
+  geom_text(aes(label = str_sub(title, start = 1)), hjust = 1, size = 2.1, color = "black") +
+  coord_flip(y = c(0, 35000)) +
+  labs(x = "", y = "Number of Ratings") +
+  labs(title = "Top 20 Movies Based on Number of Ratings", caption = "Source Data: edx set") +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), axis.title.y = element_text(size = 12)) +
+  theme(axis.title.x = element_text(size = 12))
+
+```
+
+A visual representation of the titles, with their respective release years, shows a trend towards more ratings for movies released in the 90s. Furthermore, the majority of these movies fall into the most rated genres, suggesting that a genre's popularity might be a result of a small number of heavily rated movies, as opposed to the genre being inherently more popular itself.
+$\\ \\$
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Calculate summary statistics for genres with a minimum of 100,000 ratings.
+# Each point on the plot represents a genre, and the y-axis represents the average rating.
+# Error bars indicate the range within which the true average rating is likely to fall (mean ± 2 * standard error).
+# Genres with higher average ratings and larger error bars may have more variability in audience opinions.
+edx_title_year %>%
+  group_by(genres) %>%
+  dplyr::summarise(
+    N = n(),
+    avg = mean(rating),
+    SE = sd(rating) / sqrt(N)
+  ) %>%
+  filter(N >= 50000) %>%
+  mutate(genres = reorder(genres, avg)) %>%
+  ggplot(aes(x = reorder(genres, avg), y = avg, ymin = avg - 2 * SE, ymax = avg + 2 * SE)) +
+  geom_point() +
+  geom_errorbar(color = "grey", linewidth = 0.7) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  labs(title = "Error Bar Plots by Genres", caption = "Source Data: edX Set", x = "Genres", y = "Avg") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        aspect.ratio = 0.6)
+```
+
+The bar plot illustrates the significant impact of genre on a movie's rating. Additionally, it indicates that a movie's genre is not correlated with the number of ratings it receives. Despite being comparatively poorly rated, comedy genre movies rank second in total ratings. Hence, for a platform seeking to maximise its ratings, the quality of a movie's rating holds little relevance. Furthermore, if we assume that a high number of ratings correlates with a large viewership, then a movie's rating score does not strongly influence its popularity.
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Calculate summary statistics for movie years with a minimum of 100,000 ratings.
+edx_title_year %>%
+  group_by(year) %>%
+  dplyr::summarize(n = n(), avg = mean(rating), se = sd(rating) / sqrt(n())) %>%
+  filter(n >= 20000) %>%
+  mutate(year = reorder(year, avg)) %>%
+  ggplot(aes(x = year, y = avg, ymin = avg - 2 * se, ymax = avg + 2 * se)) +
+  geom_point() +
+  geom_errorbar(color = "grey", linewidth = 0.7) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  labs(title = "Error Bar Plots by Year", caption = "Source Data: edX Set", x = "Year", y = "Avg") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+The release year of a movie also influences its rating. There is a noticeable trend showing that movies released before the 1980's tend to receive higher ratings. However, these older movies generally receive fewer ratings overall and exhibit slightly higher variability. To comprehend the underlying reasons for this trend, it is necessary to consider a broad spectrum of socioeconomic factors, including changes in cinema culture, economic conditions, the volume of film production, and the size of the industries market. With that being said, it seems reasonable to suggest that lower production volumes and higher barriers to entry create an environment conducive to higher average quality.
+$\\ \\$
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Calculate the number of distinct users and movies in the edX data set.
+edx %>%
+  dplyr::summarise(
+    n_users = n_distinct(userId),
+    n_movies = n_distinct(movieId)
+  )
+```
+
+Next, I analysed the number of users who provided movie ratings (n_users) alongside the number of movies that received ratings (n_movies). Notably, the n_users figure is 6.5 times greater than n_movies, suggesting that some users have rated multiple movies. However, rating volumes are rarely uniform; it is common for a small group of "superusers" to contribute a disproportionate number of ratings, skewing averages and ratios. Furthermore, when exploring the data set for predictive purposes using matrices and multidimensional linear regression, it became evident that the data set likely exhibited significant sparsity.
+
+```{r, echo=FALSE, comment=NA, null_prefix=TRUE}
+# Plot 1: Histogram of ratings with count < 10,000
+plot1 <- edx %>%
+  dplyr::count(movieId) %>%
+  filter(n < 10000) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 30, color = "skyblue", fill = "lightblue", alpha = 0.7) +
+  ggtitle("Distribution of Ratings by Movie") +
+  labs(
+    subtitle = "Number of Ratings by MovieId",
+    x = "Number of Ratings < 10000",
+    y = "Frequency",
+    caption = "Source Data: edX Set"
+  ) +
+  theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", fill = NA))
+
+# Plot 2: Histogram of ratings with log scale
+plot2 <- edx %>%
+  dplyr::count(movieId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 30, color = "skyblue", fill = "lightblue", alpha = 0.7) +
+  scale_x_log10() +
+  ggtitle("Distribution of Ratings by Movie") +
+  labs(
+    subtitle = "Number of Ratings by MovieId",
+    x = "Number of Ratings (log scale)",
+    y = "Frequency",
+    caption = "Source Data: edX Set"
+  ) +
+  theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", fill = NA))
+
+# Arrange the plots side by side
+grid.arrange(plot1, plot2, ncol = 2)
+
+```
+\
+The first histogram clearly shows a highly right skewed distribution. Most movies have a very low number of ratings, as evidenced by the tall bar near zero, with the frequency rapidly declining as the number of ratings increases. This aligns with the observation that the majority of movies receive very few ratings, while only a small subset of movies are rated frequently.
+
+The second histogram, plotted on a logarithmic scale, provides a clearer picture of the spread across orders of magnitude. While the skewness is less apparent due to the log transformation, it still demonstrates that there are significantly more movies with low ratings than those with high ratings. This supports the conclusion about the rarity of movies with many ratings and further emphasises the sparsity issue inherent in the data set.
+
+\pagebreak
+```{r, echo=FALSE, comment=NA, null_prefix=TRUE}
+# Plot 1: Histogram of ratings by user (linear scale)
+plot1 <- edx %>%
+  dplyr::count(userId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 30, color = "skyblue", fill = "lightblue", alpha = 0.7) +
+  ggtitle("Distribution of Ratings by User") +
+  labs(
+    subtitle = "Number of Ratings by UserId",
+    x = "Number of Ratings",
+    y = "Frequency"
+  ) +
+  theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", fill = NA))
+
+# Plot 2: Histogram of ratings by user (log scale)
+plot2 <- edx %>%
+  dplyr::count(userId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 30, color = "skyblue", fill = "lightblue", alpha = 0.7) +
+  scale_x_log10() +
+  ggtitle("Distribution of Ratings by User") +
+  labs(
+    subtitle = "Number of Ratings by UserId",
+    x = "Number of Ratings (log scale)",
+    y = "Frequency"
+  ) +
+  theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", fill = NA))
+
+# Arrange the plots side by side
+grid.arrange(plot1, plot2, ncol = 2)
+```
+\
+The analysis of the number of ratings per user reveals a distribution that is heavily skewed to the right, characterised by a rapid decrease in frequency as the number of ratings increases. This pattern suggests that while most users give relatively few ratings, with a select cohort of users that provide a significant number of ratings, which is unsurprising given the relative ease of creating new user profiles compared to consistently adding new movies to the database.
+
+This observation further highlights the critical importance of addressing scarcity in predictive modeling. It prompts us to confront challenges such as accurately predicting user preferences when faced with limited data or when dealing with users whose interests span a wide spectrum, presenting a lack of comparable nearest neighbours for reliable predictions.
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Analyse average ratings over time by extracting weekly timestamps and calculating the mean rating for each week.
+edx %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  group_by(date) %>%
+  dplyr::summarize(rating = mean(rating)) %>%
+  ggplot(aes(date, rating)) +
+  geom_point(color = "#4287f5", size = 1) +
+  geom_smooth(formula = y ~ x, method = "loess", se = TRUE, color = "#ff6199", linetype = "solid") +
+  ggtitle("Average Ratings Over Time") +
+  labs(
+    subtitle = "Timestamp, Time Unit: Week",
+    x = "Date",
+    y = "Average Ratings",
+    caption = "Source Data: edX Set"
+  ) +
+  theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", fill = NA))
+```
+\
+Analysing average ratings over time reveals a notable trend: in the early years of the internet, there was considerably higher variability, likely attributable to the smaller user base. However, as time has progressed, this variability has decreased, and the distribution of ratings has to normalised around the true mean.
+
+Moreover, examining the trend line illustrates that over time, people's average ratings experience minimal change, fluctuating within a narrow range of 3.4 to 3.7. This stability suggests a consistent pattern of user behaviour, indicating a certain level of reliability in the rating system over the years. Meaning that the data should act as a reliable estimator when predicting future movie ratings.
+
+```{r, echo=FALSE, null_prefix =TRUE, message=FALSE}
+# Filter genres with under 100 ratings
+filtered_genres <- edx %>%
+  group_by(genres) %>%
+  dplyr::summarize(num_ratings = n()) %>%
+  filter(num_ratings > 1)
+
+# Filter the original dataset based on the filtered genres
+filtered_edx <- edx %>%
+  filter(genres %in% filtered_genres$genres)
+
+# Plot 1: Number of Ratings by Genre
+plot1 <- ggplot(filtered_genres, aes(x = reorder(genres, desc(num_ratings)), y = num_ratings)) +
+  geom_point(color = "skyblue", size = 1) +
+  ggtitle("Number of Ratings by Genre") +
+  labs(
+    subtitle = "Distribution of Ratings by Genre",
+    x = "Genre",
+    y = "Number of Ratings",
+    caption = "Source Data: edX Set"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA),
+    axis.text.x = element_blank(),
+    axis.title.x = element_text()
+  )
+
+# Summarize average ratings by genre
+average_ratings <- edx_title_year %>%
+  group_by(genres) %>%
+  summarize(avg_rating = mean(rating, na.rm = TRUE))
+
+# Plot 2: Average Ratings by Genre
+plot2 <- edx_title_year %>%
+  group_by(genres) %>%
+  dplyr::summarize(rating = mean(rating)) %>%
+  ggplot(aes(genres, rating)) +
+  geom_point(color = "#4287f5", size = 1) +
+  geom_smooth(formula = y ~ x, method = "loess", se = TRUE, color = "#ff6199", linetype = "solid") +
+  ggtitle("Average Ratings by Genre") +
+  labs(
+    subtitle = "Timestamp, Time Unit: Week",
+    x = "Genre",
+    y = "Average Ratings",
+    caption = "Source Data: edX Set"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA),
+    axis.text.x = element_blank(),
+    axis.title.x = element_text()
+  )
+
+# Arrange the two plots side by side
+grid.arrange(plot1, plot2, ncol = 2)
+
+```
+Upon closer examination of the genre variable, it becomes evident that there is significant variability in both the number of ratings each genre accumulates and the average rating within each genre. This variability suggests that genre could strongly influence both the popularity and the rating of a movie. While a typical time series trend may not be calculable in this context, trends relating to genre popularity may emerge through further analysis, such as matrix factorisation, which goes beyond the standard categorisation measures
+
+```{r, echo=FALSE, null_prefix =TRUE, warning=FALSE}
+# Analyse average ratings over years by calculating the mean rating for each year.
+# Calculate the average rating for each year.
+edx_title_year$year <- as.numeric(edx_title_year$year)
+
+# Summarise average ratings by year.
+average_ratings <- edx_title_year %>%
+  group_by(year) %>%
+  summarize(avg_rating = mean(rating, na.rm = TRUE))
+
+edx_title_year %>%
+  group_by(year) %>%
+  dplyr::summarize(rating = mean(rating)) %>%
+  ggplot(aes(year, rating)) +
+  geom_point(color = "#4287f5", size = 1) +
+  geom_smooth(formula = y ~ x, method = "loess", se = TRUE, color = "#ff6199", linetype = "solid") +
+  ggtitle("Average Ratings by Release Date") +
+  labs(
+    subtitle = "Timestamp, Time Unit: Week",
+    x = "Date",
+    y = "Average Ratings",
+    caption = "Source Data: edX Set"
+  ) +
+  theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", fill = NA))
+```
+
+Analysis of average ratings according to movie release dates reveals a notable pattern: movies released between the 1930s and 1970s tend to receive higher ratings, with a steady decline observed since the 1940s. Consequently, it becomes imperative to consider normalisation of movie release years to ensure precision in recommendations, particularly for newly released films.
+
+ \pagebreak
+ 
+# Data Preprocessing
+
+Data sets created from data observed in the real world typically need processing before they can be utilised. Tasks such as cleansing, filtering, and modification make the data suitable for mathematical and machine learning models. Within this section, the emphasis will lie on data preprocessing techniques crucial for the development of recommendation system. It's important to recognise that no data preprocessing stage is flawless or exhaustive. The preprocessing process is inherently iterative and subject to evolution over time, influenced by the nature of the data at hand, advancements in mathematical research, shifting assumptions, and evolving standards.
+
+## Matrix Transformation 
+First I created a ratings matrix to start to help us reduce the sparsity problem. 
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Create a copy of the edx_title_year data frame for manipulation without altering the original data.
+edx_title_year.copy <- edx_title_year
+
+# Convert the userId and movieId columns to factors for categorical representation.
+edx_title_year.copy$userId <- as.factor(edx_title_year.copy$userId)
+edx_title_year.copy$movieId <- as.factor(edx_title_year.copy$movieId)
+
+# Convert userId and movieId back to numeric representation.
+edx_title_year.copy$userId <- as.numeric(edx_title_year.copy$userId)
+edx_title_year.copy$movieId <- as.numeric(edx_title_year.copy$movieId)
+
+# Create a sparse matrix representation of ratings.
+sparse_ratings <- sparseMatrix(
+  i = edx_title_year.copy$userId,
+  j = edx_title_year.copy$movieId,
+  x = edx_title_year.copy$rating,
+  dims = c(
+    length(unique(edx_title_year.copy$userId)),
+    length(unique(edx_title_year.copy$movieId))
+  ),
+)
+
+# Remove the copied data frame to free up memory.
+rm(edx_title_year.copy)
+
+# Define constants.
+num_users <- 50
+num_movies <- 50
+num_display_users <- 10
+
+# Suppress row and column names in sparse matrix display.
+options(Matrix.print.rownames = FALSE)
+options(Matrix.print.colnames = FALSE)
+
+# Display a subset of the sparse ratings.
+sparse_ratings[1:num_display_users, 1:num_display_users]
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Convert rating matrix into a recommenderlab sparse matrix.
+ratingMat <- new("realRatingMatrix", data = sparse_ratings)
+ratingMat
+```
+\
+When converting datasets into matrices, numerous packages are available. However, various factors must be taken into account, including data sparsity, scarcity, compute power, memory, complexity, and runtime. Particularly for large datasets with high levels of sparsity, the Matrix.utils package provides a suitable solution with its function, sparseMatrix, which handles the data well. 
+
+During the data mining process of building a recommendation system, I needed to identify patterns that allowed me to calculate how similar people's preferences are to one another. Typically, similar preferences can be thought of in terms of distances in a multidimensional Euclidean space. One particular measure of distance that has proven efficient is the Cosine Similarity, which measures the cosine of the angle between two different vectors of an inner product space. Essentially, it aims to measure whether two vectors are pointing in the same direction. The benefits of this technique are its consistency, its adequate handling of the problems of sparsity and scarcity, and its scalability with large datasets, making it suitable for real-world applications where processing large amounts of data is necessary. 
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Compute user similarity using cosine similarity for the first 200 users.
+similarity_users <- similarity(ratingMat[1:200,], 
+                               method = "cosine", 
+                               which = "users")
+
+# Visualise user similarity using an image plot.
+image(as.matrix(similarity_users), main = "User Similarity")
+
+# Compute movie similarity using cosine similarity for the first 50 movies.
+similarity_movies <- similarity(ratingMat[,1:50], 
+                                method = "cosine", 
+                                which = "items")
+
+# Visualise movie similarity using an image plot.
+image(as.matrix(similarity_movies), main = "Movies Similarity")
+```
+For visualisation purposes, the two matrices above were generated using a subset of the first 200 users to reduce computational load. Each row represents a user, and each column represents a movie. Consequently, each cell contains user ratings for movies, with similarity indicated by colour. Darker cells denote greater similarity between adjacent users.
+
+Furthermore, a significant implication of this analysis is the discovery of uncharted categories suggested by groups of similar user and movie ratings. These categories may defy traditional genres or preferences, revealing previously unrecognised patterns in human behaviour. This approach to identifying patterns offers a more organic method of defining groups in various contexts, although caution is warranted regarding potential circular reasoning. Organic groups may have formed over time due to the use of pre-existing grouping methods, causing expectation bias.
+
+Nevertheless, uncovering novel groups and patterns yields transformative insights for industry, playing a pivotal role in prediction and recommendation systems.
+
+## Dimension Reduction
+In the next stage of my data processing, I need to tighten up the sparsity of the data. I can do this using techniques that reduce the dimentionality of the Euclidean spaces. I can use Principal Component Analysis (PCA) to reduce the linear dimensionality of the data, and Singular Value Decomposition to factorise, rotate and rescale the data in order to extrapolate some of the more important patterns, with lower dimentionality. 
+
+As I am running these computations locally, I will use the Iterative randomised Lanczos Bidiagonalization Algorithm (IRLBA) package, which has been optimised towards low computational load by using the randomised algorithms based on the Lanczos method (a method that can quickly and accurately find the eigenvalues and eigenvectors of a large, sparse, symmetric matrix) to approximate the most important single values and vectors. 
+\
+```{r, echo=FALSE, null_prefix =TRUE}
+# Set seed for reproducibility.
+set.seed(42)
+
+# Perform incremental randomised SVD on the sparse_ratings matrix.
+suppressMessages({
+  svd_result <- irlba(sparse_ratings, tol=1e-4, verbose=TRUE, nv = 100, maxit = 1000)
+})
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Calculate the percentage of total sum of squares for the first 6, 12, and 20 singular values.
+all_sing_sq <- sum(svd_result$d^2)
+first_6 <- sum(svd_result$d[1:6]^2)
+#print(first_6/all_sing_sq)
+
+first_12 <- sum(svd_result$d[1:12]^2)
+#print(first_12/all_sing_sq)
+
+first_20 <- sum(svd_result$d[1:20]^2)
+#print(first_20/all_sing_sq)
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Set up the plotting area for 1 row and 2 columns
+par(mfrow=c(1,2))
+
+# Plot singular values for the User-Movie Matrix
+plot(svd_result$d, pch=20, col = "blue", cex = 0.5, xlab='Singular Value %', ylab='Magnitude', 
+     main = "Singular Values for User-Movie Matrix", cex.main = 0.65)
+
+# Calculate the cumulative percentage of total sum of squares for each singular value
+perc_vec <- NULL
+for (i in 1:length(svd_result$d)) {
+  perc_vec[i] <- sum(svd_result$d[1:i]^2) / all_sing_sq
+}
+
+# Plot the cumulative percentage against singular values and a horizontal line at 90%
+plot(perc_vec, pch=20, col = "blue", cex = 0.5, xlab='Singular Value %', 
+     ylab='% of Sum of Squares of Singular Values', main = "Choosing k for Dimensionality Reduction", cex.main = 0.65)
+lines(x = c(0,100), y = c(.90, .90))
+```
+
+Plotting a cumulative sum of squares for the singular values reveals that the 90% threshold is achieved somewhere between 50% and 60% of the singular values. The first 6% percent of the singular values of the imputed ratings matrix explain over half of the variability, with nearly 70% of the variability explained by the first 12%, and over 75% by the first 20%. My goal is to identify the percentage of 'k' singular values whose squared sum accounts for at least 90% of the total sum of squares, as this allows us to capture the vast majority of variability while keeping the dimensionality reduction manageable. Essentially, I am prioritising the retention of the most significant patterns or features in the data. This 90% threshold strikes a balance between preserving information and reducing the complexity of the model. It’s a common practice in data analysis and dimensionality reduction to set thresholds based on the proportion of variability explained, ensuring that I retain a high level of signal while minimising noise.
+
+\pagebreak
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Determine the optimal value for k:
+# To find k, calculate the length of the vector derived from the cumulative sum of squares.
+# The chosen k corresponds to the number of singular values needed to capture 90% of the total sum of squares,
+# excluding any values that exceed the 0.90 threshold.
+
+#Find the optimal k value.
+k = length(perc_vec[perc_vec <= .90])
+cat("Optimal k Value:", k, "\n")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Decompose Y into matrices U, D, and V.
+U_k <- svd_result$u[, 1:k]
+D_k <- Diagonal(x = svd_result$d[1:k])
+V_k <- t(svd_result$v)[1:k, ]
+
+# Display dimensions.
+cat("Dimensions of U_k:", dim(U_k), "\n")
+cat("Dimensions of D_k:", dim(D_k), "\n")
+cat("Dimensions of V_k:", dim(V_k), "\n")
+```
+\ 
+Upon observing that $k=55$ captures 90% of the variability, I generated three matrices: $D_k$ sized 55 x 55, $U_k$ sized 69878 x 55, and $V_k$ sized 55 x 10677. The total number of numeric values required to store these component matrices amounts to $(69878×55)+(55×55)+(55×10677) = 4,433,550$. This reflects a reduction of approximately 99.4% compared to the original 746,087,406 entries. Despite the dimensionality reduction I can still do more work to reduce the memory needed to run my models. To address this, I employ another reduction technique, selecting relevant data using the entire rating matrix.
+
+## Relevant Data
+During the data analysis process, I observed significant left skewness in both the user rating counts and movie ratings, indicating that a substantial portion of the data holds limited predictive value. To mitigate computational load without sacrificing predictive accuracy, I propose implementing a threshold for the minimum number of ratings required for inclusion in my models, both for users and movies.
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Determine the minimum number of movies and users.
+min_n_movies <- round(quantile(rowCounts(ratingMat), 0.90))
+min_n_users <- round(quantile(colCounts(ratingMat), 0.75))
+
+cat("Minimum number of movies (90th percentile):", min_n_movies, "\n")
+cat("Minimum number of users (90th percentile):", min_n_users, "\n")
+
+# Extract ratings for movies and users meeting the criteria.
+ratings_movies <- ratingMat[
+  rowCounts(ratingMat) > min_n_movies,
+  colCounts(ratingMat) > min_n_users
+]
+
+# Display the resulting ratings matrix.
+ratings_movies
+```
+If I only include movies and users within the 90th percentile, then any users or movies that fall into the lowest 10th percentile will not be included in the analysis. As a result the dataset consists of movies with a minimum of 302 ratings and users who have left a minimum of 564 ratings. This results in a matrix of 6960 distinct movies and 2669 distinct users, with 3344239 ratings.
+
+\pagebreak
+
+# Models and Results
+The upcoming section will delve into a range of predictive models, including Linear Regression, Slope One, Matrix Factorisation, Ensemble Models, and Neural Networks. Each model will be accompanied by an explanation of its workings, rationale for its selection, and the predictive outcomes it generated. To evaluate the efficacy of the models' predictions, I will use Root Mean Squared Error (RMSE). A lower RMSE value indicates better predictive accuracy. The objective for this report is to achieve an RMSE of under 0.85, as stipulated by the task requirements. To construct the RMSE, one must determine the residuals. Residuals are the difference between the actual values and the predicted values. I denoted them by $\hat{y}_{u,i} -y_{u,i}$, where $y_{u,i}$ is the observed value for the ith observation and $\hat{y}_{u,i}$ is the predicted value.
+
+The residuals value can be larger or smaller than the true value, and can therefore be positive or negative. Squaring the residuals, averaging the squares, and taking the square root gives us the RMSE. Which in turn always produces a positive number. I then use the RMSE as a measure of spread between the true values and the predicted values.
+
+The equation to calculate the RMSE can be denoted as follows: $$\mbox{RMSE} = \sqrt{\frac{1}{N} \sum_{u,i}^{} \left( \hat{y}_{u,i} - y_{u,i} \right)^2 }$$
+
+```{r, echo=FALSE, echo=FALSE}
+#Define the RMSE function.
+RMSE <- function(true_ratings, predicted_ratings){
+    sqrt(mean((true_ratings - predicted_ratings)^2))
+  }
+```
+
+## Linear Regression
+To begin with, I will start with a set of simple and straight forward linear regression models, that take into account some of the effects I found during the data exploration process.
+
+***Mu***: I employed the average rating, denoted as $\mu$, as a benchmark for making predictions on the test data. In this model, each observation's prediction is simply the global average, represented as $Y_{u,i} = \mu + \varepsilon_{u,i}$, where $\hat{Y}_{u,i}$ signifies the predicted rating for each observation $i$. More specifically, $\Mu$ represents the global average rating, serving as the baseline or average rating across all observations, and $\varepsilon_{u,i}$ represents the error term for observation for $i$, capturing the deviation of the actual rating from the global average. Essentially, I utilise the global average rating of 3.51 as a predictor for how users will rate other movies. This model serves as a useful benchmark for future models, as any model exhibiting a higher error rate than the average introduces complexity and yields inferior outcomes.
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Define the RMSE function.
+calculate_RMSE <- function(true_ratings, predicted_ratings) {
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+# Calculate the global average rating.
+mu <- mean(edx$rating)
+cat("Mu:", mu, "\n")
+
+# Calculate training time and predict ratings.
+training_time_mu <- system.time({
+predicted_ratings <- final_holdout_test %>%
+  mutate(pred = mu) %>%
+  pull(pred)
+})
+
+# Calculate RMSE.
+rmse_mu <- calculate_RMSE(final_holdout_test$rating, predicted_ratings)
+
+# Calculate model size.
+model_size_mu <- round(
+  sum(
+    object.size(mu),
+    object.size(predicted_ratings)
+  ) / (1024^2),  # Convert to MB
+  4
+)
+
+# Save the results of Mu model.
+saveRDS(list(rmse = rmse_mu, time = training_time_mu["elapsed"], size = model_size_mu), file = "mu_model.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load model results.
+mu_model <- readRDS(file.path(workingDirectory, "mu_model.rds"))
+
+# Print results.
+cat("RMSE for Mu:", mu_model$rmse, "\n")
+cat("Training Time:", round(mu_model$time["elapsed"], 4), "sec\n")
+cat("Model Size:", mu_model$size, "MB")
+```
+\makebox[3cm]{\noindent}\makebox[11cm]{\dotfill}\makebox[3cm]{\noindent}
+$\\ \\$
+***Movie Effects***: I can improve upon my original model by adding movie bias to the equation denoted by $b_i$. This entails summing the differences between each individual movie rating within a particular movie group and $mu$. As a result, I obtained an average value that indicates the extent to which the set of ratings for each movie deviates from the overall average of all movies. Therefore, the model can now be written as: $$Y_{u,i} = \mu + b_i + \varepsilon_{u,i}$$This process enabled me to generate predictions with slightly greater precision with an RMSE score of 0.944.
+
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Movie effect.
+movie_avgs <- edx %>%
+  group_by(movieId) %>%
+  dplyr::summarize(b_i = mean(rating - mu))
+
+# Calculate training time and predict ratings.
+training_time_movie <- system.time({
+predicted_ratings_bi <- final_holdout_test %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  mutate(pred = mu + b_i) %>%
+  pull(pred)
+})
+
+# Calculate RMSE for movie effect.
+rmse_model_movie <- calculate_RMSE(final_holdout_test$rating, predicted_ratings_bi)
+
+# Calculate model size.
+model_size_movie_effect <- round(
+  sum(
+    object.size(movie_avgs),
+    object.size(predicted_ratings_bi)
+  ) / (1024^2),  # Convert to MB.
+  4
+)
+
+# Save the results of Movie effect model.
+saveRDS(list(rmse = rmse_model_movie, time = training_time_movie["elapsed"], size = model_size_movie_effect), file = "movie_effect_model.rds")
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load model results.
+movie_effect_model <- readRDS(file.path(workingDirectory, "movie_effect_model.rds"))
+
+# Print results.
+cat("RMSE for Movie Effect:", movie_effect_model$rmse, "\n")
+cat("Training Time:", round(movie_effect_model$time["elapsed"], 4), "sec\n")
+cat("Model Size:", movie_effect_model$size, "MB")
+```
+\makebox[3cm]{\noindent}\makebox[11cm]{\dotfill}\makebox[3cm]{\noindent}
+$\\ \\$
+***Movie + User Effects***: Next I can apply the same logic for User effect, meaning the model will now take into consideration the difference between ratings from a specific user depicted by $b_u$, compared to the average of all movies. Therefore, the model can now be written as: $$Y_{u,i} = \mu + b_i + b_u + \varepsilon_{u,i}$$The new model allows me to generate predictions with a considerable improvement in precision achieving an RMSE score of 0.866. Through the initial data exploration I identified that there were noticeable year, genre, and time effects. Therefore, the next set of models will incorporate those variables to train and gain more predictive power.
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Movie + User effect.
+user_avgs <- edx %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  group_by(userId) %>%
+  dplyr::summarize(b_u = mean(rating - mu - b_i))
+
+# Calculate training time and predict ratings.
+training_time_movie_user <- system.time({
+predicted_ratings_bu <- final_holdout_test %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+})
+
+# Calculate RMSE for user effect.
+rmse_model_movie_user <- calculate_RMSE(final_holdout_test$rating, predicted_ratings_bu)
+
+# Calculate model size.
+model_size_movie_user <- round(
+  sum(
+    object.size(movie_avgs),
+    object.size(user_avgs),
+    object.size(predicted_ratings_bu)
+  ) / (1024^2),  # Convert to MB.
+  4
+)
+
+# Save the results of Movie + User effect model.
+saveRDS(list(rmse = rmse_model_movie_user, time = training_time_movie_user["elapsed"], size = model_size_movie_user), file = "movie_user_effect_model.rds")
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load model results.
+movie_user_effect_model <- readRDS(file.path(workingDirectory, "movie_user_effect_model.rds"))
+
+# Print results.
+cat("RMSE for Movie + User Effect:", movie_user_effect_model$rmse, "\n")
+cat("Training Time:", round(movie_user_effect_model$time["elapsed"], 4), "sec\n")
+cat("Model Size:", movie_user_effect_model$size, "MB")
+```
+\makebox[3cm]{\noindent}\makebox[11cm]{\dotfill}\makebox[3cm]{\noindent}
+$\\ \\$
+***Movie + User + Time Effects***: Including time as a variable increases the predictive power minimally, lowering the RMSE from 0.867 to 0.865. The model can now be written as $$Y_{u,i} = \mu + b_i + b_u + b_t + \varepsilon_{u,i}$$.
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Movie + User + Time effect.
+final_holdout_year <- final_holdout_year %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week"))
+
+# Calculate time averages.
+time_avgs <- edx %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  group_by(date) %>%
+  dplyr::summarize(b_t = mean(rating - mu - b_i - b_u))
+
+# Calculate training time and predict ratings with time effect.
+training_time_movie_user_time <- system.time({
+  predicted_ratings_bt <- final_holdout_year %>%
+    left_join(movie_avgs, by = "movieId") %>%
+    left_join(user_avgs, by = "userId") %>%
+    left_join(time_avgs, by = "date") %>%
+    mutate(pred = mu + b_i + b_u + b_t) %>%
+    pull(pred)
+})
+
+# Calculate RMSE for time effect.
+rmse_model_movie_user_time <- calculate_RMSE(final_holdout_test$rating, predicted_ratings_bt)
+
+# Calculate model size.
+model_size_movie_user_time <- round(
+  sum(
+    object.size(movie_avgs),
+    object.size(user_avgs),
+    object.size(time_avgs),
+    object.size(predicted_ratings_bt)
+  ) / (1024^2),  # Convert to MB.
+  4
+)
+
+# Save the results of Movie + User + Time effect model.
+saveRDS(list(rmse = rmse_model_movie_user_time, time = training_time_movie_user_time["elapsed"], size = model_size_movie_user_time), file = "movie_user_time_effect_model.rds")
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load model results.
+movie_user_time_effect_model <- readRDS(file.path(workingDirectory, "movie_user_time_effect_model.rds"))
+
+# Print results.
+cat("RMSE for Movie + User + Time Effect:", movie_user_time_effect_model$rmse, "\n")
+cat("Training Time:", round(movie_user_time_effect_model$time["elapsed"], 4), "sec\n")
+cat("Model Size:", movie_user_time_effect_model$size, "MB")
+```
+\makebox[3cm]{\noindent}\makebox[11cm]{\dotfill}\makebox[3cm]{\noindent}
+$\\ \\$
+***Movie + User + Genre Effects***: Including genre as a variable also increases the predictive power minimally, lowering the RMSE from 0.867 to 0.866. The model can now be written as $$Y_{u,i} = \mu + b_i + b_u + b_g + \varepsilon_{u,i}$$.
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Calculate genre averages.
+genre_avgs <- edx %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  group_by(genres) %>%
+  dplyr::summarize(b_g = mean(rating - mu - b_i - b_u))
+
+# Calculate training time and predict ratings with genre effect.
+training_time_movie_user_genre <- system.time({
+  predicted_ratings_bg <- final_holdout_test %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  left_join(genre_avgs, by = "genres") %>%
+  mutate(pred = mu + b_i + b_u + b_g) %>%
+  pull(pred)
+})
+
+# Calculate RMSE for genre effect.
+rmse_model_movie_user_genre <- calculate_RMSE(final_holdout_test$rating, predicted_ratings_bg)
+
+# Calculate model size.
+model_size_movie_user_genre <- round(
+  sum(
+    object.size(movie_avgs),
+    object.size(user_avgs),
+    object.size(genre_avgs),
+    object.size(predicted_ratings_bg)
+  ) / (1024^2),  # Convert to MB.
+  4
+)
+
+# Save the results of Movie + User + Genre effect model.
+saveRDS(list(rmse = rmse_model_movie_user_genre, time = training_time_movie_user_genre["elapsed"], size = model_size_movie_user_genre), file = "movie_user_genre_effect_model.rds")
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load model results.
+movie_user_genre_effect_model <- readRDS(file.path(workingDirectory, "movie_user_genre_effect_model.rds"))
+
+# Print results.
+cat("RMSE for Movie + User + Genre Effect: ", movie_user_genre_effect_model$rmse, "\n")
+cat("Training Time:", round(movie_user_genre_effect_model$time["elapsed"], 4), "sec\n")
+cat("Model Size:", movie_user_genre_effect_model$size, "MB")
+```
+\makebox[3cm]{\noindent}\makebox[11cm]{\dotfill}\makebox[3cm]{\noindent}
+$\\ \\$
+***Movie + User + Year Effects***: Including release year as a variable also increases the predictive power minimally, lowering the RMSE from 0.867 to 0.866. The model can now be written as $$Y_{u,i} = \mu + b_i + b_u + b_y + \varepsilon_{u,i}$$.
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Calculate genre averages.
+year_avgs <- edx_title_year %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  group_by(year) %>%
+  dplyr::summarize(b_y = mean(rating - mu - b_i - b_u))
+
+year_avgs <- year_avgs %>%
+  mutate(year = as.character(year))
+
+# Calculate training time and predict ratings with genre, time, and year effects.
+training_time_movie_user_year <- system.time({
+  predicted_ratings_bg_bt_yr <- final_holdout_year %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  left_join(year_avgs, by = "year") %>%
+  mutate(pred = mu + b_i + b_u + b_y) %>%
+  pull(pred)
+})
+
+# Calculate RMSE for genre, time, and year effects.
+rmse_model_movie_user_year <- calculate_RMSE(final_holdout_test$rating, predicted_ratings_bg_bt_yr)
+
+# Calculate model size.
+model_size_movie_user_year <- round(
+  sum(
+    object.size(movie_avgs),
+    object.size(user_avgs),
+    object.size(year_avgs),
+    object.size(predicted_ratings_bg_bt_yr)
+  ) / (1024^2),  # Convert to MB.
+  4
+)
+
+# Save the results of Movie + User + Year effect model.
+saveRDS(list(rmse = rmse_model_movie_user_year, time = training_time_movie_user_year["elapsed"], size = model_size_movie_user_year), file = "movie_user_year_effect_model.rds")
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load model results.
+movie_user_year_effect_model <- readRDS(file.path(workingDirectory, "movie_user_year_effect_model.rds"))
+
+# Print results.
+cat("RMSE for Movie + User + Year Effect: ", movie_user_year_effect_model$rmse, "\n")
+cat("Training Time:", round(movie_user_year_effect_model$time["elapsed"], 4), "sec\n")
+cat("Model Size:", movie_user_year_effect_model$size, "MB")
+```
+\makebox[3cm]{\noindent}\makebox[11cm]{\dotfill}\makebox[3cm]{\noindent}
+$\\ \\$
+***Movie + User + Time + Genre + Year Effects***: Including release year as a variable also increases the predictive power minimally, lowering the RMSE from 0.867 to 0.865. The model can now be written as $$Y_{u,i} = \mu + b_i + b_u + b_g + b_t + b_y + \varepsilon_{u,i}$$.
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Calculate training time and predict ratings with genre, time, and year effects.
+training_time_movie_user_genre_time_year <- system.time({
+  predicted_ratings_bg_bt_yr_dt_gr <- final_holdout_year %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  left_join(genre_avgs, by = "genres") %>%
+  left_join(time_avgs, by = "date") %>%
+  left_join(year_avgs, by = "year") %>%
+  mutate(pred = mu + b_i + b_u + b_g + b_t + b_y) %>%
+  pull(pred)
+})
+
+# Calculate RMSE for genre, time, and year effects.
+rmse_model_movie_user_genre_time_year <- calculate_RMSE(final_holdout_test$rating, predicted_ratings_bg_bt_yr_dt_gr)
+
+# Calculate model size.
+model_size_movie_user_genre_time_year <- round(
+  sum(
+    object.size(movie_avgs),
+    object.size(user_avgs),
+    object.size(time_avgs),
+    object.size(genre_avgs),
+    object.size(year_avgs),
+    object.size(predicted_ratings_bg_bt_yr_dt_gr)
+  ) / (1024^2),  # Convert to MB.
+  4
+)
+
+# Save the results of Movie + User + Time + Genre + Year effect model.
+saveRDS(list(rmse = rmse_model_movie_user_genre_time_year, time = training_time_movie_user_genre_time_year["elapsed"], size = model_size_movie_user_genre_time_year), file = "movie_user_time_genre_year_effect_model.rds")
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load model results.
+movie_user_time_genre_year_effect_model <- readRDS(file.path(workingDirectory, "movie_user_time_genre_year_effect_model.rds"))
+
+# Print results.
+cat("RMSE for Movie + User + Genre + Time + Year Effect: ", movie_user_time_genre_year_effect_model$rmse, "\n")
+cat("Training Time:", round(movie_user_time_genre_year_effect_model$time["elapsed"], 4), "sec\n")
+cat("Model Size:", movie_user_time_genre_year_effect_model$size, "MB")
+```
+\makebox[3cm]{\noindent}\makebox[11cm]{\dotfill}\makebox[3cm]{\noindent}
+$\\ \\$
+***Regularisation***: Next I experimented by adding regularisation to the models to try a smooth out some of the large outlier values, and stop overfitting the data. Regularisation mitigates overfitting by adding a penalty to large values in the dataset. Specifically, I applied regularisation to model parameters $bi$ and $bu$ in the optimisation process, controlled by the regularisation parameter $λ$.
+
+Adjusting $λ$ allows us to strike a balance between over and under fitting the training data, while maintaining a simpler model. This balance allows us to maintain accurate pattern capture while stabilising the models behaviour, by reducing sensitivity to noise and sparse data.
+
+Mathematically, $n_i$ represents the number of ratings made for movie $i$. As $n_i + \lambda \approx n_i$, when $n_i$ becomes large, the model tends to stabilise on it's own due to the central limit theorem, and in turn the influence of $\lambda$ diminishes. Conversely, as $n_i$ decreases and data becomes sparse, and the estimate of $\hat{b}_i(\lambda)$ converges towards 0. Therefore, larger values of $\lambda$ are needed, and lead to stronger regularisation, causing the estimated coefficients to be contracted more aggressively. This contraction is necessary because they aren't naturally smoothed out by larger samples of $n$.
+
+The regularisation is using cross validation to achieve the best $λ$ value for each variable. In the first model, I group by movieId, and then by userId. This approach assumes that each user's rating deviation from the mean is primarily influenced by the movie they are rating. The equations can be shown as:
+
+movieID: $$\hat{b}_i(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu}\right)$$
+userID: $$\hat{b}_u(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu} - \hat{b}_i \right)$$. 
+
+In contrast in the second model, I grouped by userId, and then by movieId. This approach assumes that each movie's rating deviation from the mean is primarily influenced by the user rating it. The equations can be shown as:
+
+userID: $$\hat{b}_i(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu}\right)$$
+movieID: $$\hat{b}_u(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu} - \hat{b}_i \right)$$. 
+
+Typically, in collaborative filtering-based recommender systems, the first approach is more common, as ratings tend to vary more for different movies than for different users. Essentially, I expect to see a larger difference in ratings between different movies rated by the same user than between ratings for the same movie given by different users. For example, a user might have a strong preference for certain genres or actors, meaning their ratings will vary a lot; however, a movie tends to be less divisive, with people gravitating towards more similar, centralised ratings.
+
+Nevertheless, I will investigate both regularisation methods for good measure, and exploratory purposes.
+\
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Regularisation.
+# Set up lambda values for cross-validation.
+lambdas <- seq(0, 10, 0.25)
+
+# Initialise vectors to store RMSE and model sizes
+rmses_movieID <- numeric(length(lambdas))
+model_size_movie_user_reg <- numeric(length(lambdas))
+
+# Function to calculate RMSE with regularisation.
+calculate_RMSE_reg <- function(edx, final_holdout_year, lambda) {
+  
+  mu_reg <- mean(edx$rating)
+  
+  b_i_reg <- edx %>%
+    group_by(movieId) %>%
+    dplyr::summarize(b_i_reg = sum(rating - mu_reg) / (n() + lambda))
+  
+  b_u_reg <- edx %>%
+    left_join(b_i_reg, by = "movieId") %>%
+    group_by(userId) %>%
+    dplyr::summarize(b_u_reg = sum(rating - b_i_reg - mu_reg) / (n() + lambda))
+  
+  predicted_ratings_b_i_u <- final_holdout_test %>%
+    left_join(b_i_reg, by = "movieId") %>%
+    left_join(b_u_reg, by = "userId") %>%
+    mutate(pred = mu_reg + b_i_reg + b_u_reg) %>%
+    pull(pred)
+  
+  model_size_movie_user_reg <<- round(  # Using <<- to assign it globally outside of the function. 
+    sum(
+      object.size(mu_reg),
+      object.size(b_i_reg),
+      object.size(b_u_reg),
+      object.size(predicted_ratings_b_i_u)
+    ) / (1024^2),  # Convert to MB.
+    4
+  )
+  
+  return(list(RMSE = RMSE(final_holdout_test$rating, predicted_ratings_b_i_u), Model_Size = model_size_movie_user_reg))
+}
+
+# Calculate training time and RMSE for different lambdas using sapply.
+training_time_movie_user_reg <- system.time({
+  for (i in seq_along(lambdas)) {
+    result <- calculate_RMSE_reg(edx, final_holdout_test, lambdas[i])
+    rmses_movieID[i] <- result$RMSE
+    model_size_movie_user_reg[i] <- result$Model_Size
+  }
+})
+
+# Plot RMSE values for different lambdas.
+plot1 <- ggplot(data = data.frame(lambdas, rmses_movieID), aes(x = lambdas, y = rmses_movieID)) +
+  geom_point(color = "blue") +
+  geom_line(color = "red") +
+  labs(
+    title = "RMSE vs. Lambda",
+    x = "Lambda",
+    y = "RMSE"
+  ) +
+  theme_minimal()
+
+rmses_userID <- numeric(length(lambdas))
+model_size_user_movie_reg <- numeric(length(lambdas))
+
+# Function to calculate RMSE with regularisation.
+calculate_RMSE_reg <- function(edx, final_holdout_year, lambda) {
+    
+  mu_reg <- mean(edx$rating)
+
+    b_i_reg <- edx %>%
+      group_by(userId) %>%
+      dplyr::summarize(b_i_reg = sum(rating - mu_reg) / (n() + lambda))
+
+    b_u_reg <- edx %>%
+      left_join(b_i_reg, by = "userId") %>%
+      group_by(movieId) %>%
+      dplyr::summarize(b_u_reg = sum(rating - b_i_reg - mu_reg) / (n() + lambda))
+
+    predicted_ratings_b_i_u <- final_holdout_test %>%
+      left_join(b_i_reg, by = "userId") %>%
+      left_join(b_u_reg, by = "movieId") %>%
+      mutate(pred = mu_reg + b_i_reg + b_u_reg) %>%
+      pull(pred)
+
+   model_size_user_movie_reg <<- round(  # Using <<- to assign it globally outside of the function. 
+    sum(
+      object.size(mu_reg),
+      object.size(b_i_reg),
+      object.size(b_u_reg),
+      object.size(predicted_ratings_b_i_u)
+    ) / (1024^2),  # Convert to MB
+    4
+  )
+  
+  return(list(RMSE = RMSE(final_holdout_test$rating, predicted_ratings_b_i_u), Model_Size = model_size_user_movie_reg))
+}
+
+# Calculate training time and RMSE for different lambdas using sapply.
+training_time_user_movie_reg <- system.time({
+  for (i in seq_along(lambdas)) {
+    result <- calculate_RMSE_reg(edx, final_holdout_test, lambdas[i])
+    rmses_userID[i] <- result$RMSE
+    model_size_user_movie_reg[i] <- result$Model_Size
+  }
+})
+
+# Plot RMSE values for different lambdas.
+plot2 <- ggplot(data = data.frame(lambdas, rmses_userID), aes(x = lambdas, y = rmses_userID)) +
+  geom_point(color = "blue") +
+  geom_line(color = "red") +
+  labs(
+    title = "RMSE vs. Lambda",
+    x = "Lambda",
+    y = "RMSE"
+  ) +
+  theme_minimal()
+
+grid.arrange(plot1, plot2, ncol=2)
+```
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Find the optimal lambda for movieID.
+optimal_lambda_all <- lambdas[which.min(rmses_movieID)]
+cat("Optimal Lambda: ", optimal_lambda_all, "\n")
+
+# Find the optimal lambda for UserID.
+optimal_lambda_all <- lambdas[which.min(rmses_userID)]
+cat("Optimal Lambda: ", optimal_lambda_all, "\n")
+
+# Calculate RMSE for the full model with the optimal lambda.
+rmse_regularised_movieID <- min(rmses_movieID)
+
+# Save the results of Regularised Movie + User Effect model
+saveRDS(list(rmse = rmse_regularised_movieID, time = training_time_movie_user_reg["elapsed"], size = model_size_movie_user_reg[1]), file = "regularised_movie_user_effect_model.rds")
+
+# Calculate RMSE for the full model with the optimal lambda.
+rmse_regularised_userID <- min(rmses_userID)
+
+# Save the results of Regularised User + Movie effect model
+saveRDS(list(rmse = rmse_regularised_userID, time = training_time_user_movie_reg["elapsed"], size = model_size_user_movie_reg[1]), file = "regularised_user_movie_effect_model.rds")
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load model results.
+regularised_movie_user_effect_model <- readRDS(file.path(workingDirectory, "regularised_movie_user_effect_model.rds"))
+
+# Print results.
+cat("RMSE for movieId with Regularisation:", regularised_movie_user_effect_model$rmse, "\n")
+cat("Training Time:", round(regularised_movie_user_effect_model$time["elapsed"], 4), "sec\n")
+cat("Model size:", regularised_movie_user_effect_model$size, "MB\n\n")
+
+# Load model results.
+regularised_user_movie_effect_model <- readRDS(file.path(workingDirectory, "regularised_user_movie_effect_model.rds"))
+
+# Print results.
+cat("RMSE for userId with Regularisation: ", regularised_user_movie_effect_model$rmse, "\n")
+cat("Training Time:", round(regularised_user_movie_effect_model$time["elapsed"], 4), "sec\n")
+cat("Model size:", regularised_user_movie_effect_model$size, "MB", "\n")
+```
+
+I observed that applying regularisation to the movieId variables resulted in a slight decrease in RMSE from 0.866 to 0.865, and as expected regularisation to the userId increases the RMSE from 0.866 to 0.88. Moving forward, I will extend regularisation across all parameters grouped by movieId in pursuit of further enhancements.
+\
+
+```{r, echo=FALSE, null_prefix =TRUE}
+final_holdout_time <- final_holdout_year %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week"))
+
+edx_title_time <- edx_title_year %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week"))
+
+# Initialise vectors to store RMSE and model sizes.
+rmses_all <- numeric(length(lambdas))
+model_size_all_reg <- numeric(length(lambdas))
+
+# Convert year column to character type in both data frames
+edx_title_time <- edx_title_time %>%
+  mutate(year = as.character(year))
+
+# Function to calculate RMSE with regularisation.
+calculate_RMSE_reg_all <- function(edx_title_time, final_holdout_year, lambda) {
+    
+  mu_reg <- mean(edx_title_time$rating)
+    
+    b_i_reg <- edx_title_time %>%
+      group_by(movieId) %>%
+      dplyr::summarize(b_i_reg = sum(rating - mu_reg) / (n() + lambda))
+    
+    b_u_reg <- edx_title_time %>%
+      left_join(b_i_reg, by = "movieId") %>%
+      group_by(userId) %>%
+      dplyr::summarize(b_u_reg = sum(rating - b_i_reg - mu_reg) / (n() + lambda))
+  
+    b_g_reg <- edx_title_time %>%
+      left_join(b_i_reg, by = "movieId") %>%
+      group_by(genres) %>%
+      dplyr::summarize(b_g_reg = sum(rating - b_i_reg - mu_reg) / (n() + lambda))
+  
+    b_y_reg <- edx_title_time %>%
+      left_join(b_i_reg, by = "movieId") %>%
+      group_by(year) %>%
+      dplyr::summarize(b_y_reg = sum(rating - b_i_reg - mu_reg) / (n() + lambda))
+  
+    b_t_reg <- edx_title_time %>%
+      left_join(b_i_reg, by = "movieId") %>%
+      group_by(date) %>%
+      dplyr::summarize(b_t_reg= sum(rating - b_i_reg - mu_reg) / (n() + lambda))
+    
+    predicted_ratings_b_i_u <- final_holdout_time %>%
+      left_join(b_i_reg, by = "movieId") %>%
+      left_join(b_u_reg, by = "userId") %>%
+      left_join(b_g_reg, by = "genres") %>%
+      left_join(b_y_reg, by = "year") %>%
+      left_join(b_t_reg, by = "date") %>%
+      mutate(pred = mu_reg + b_i_reg + b_u_reg + b_g_reg+ b_y_reg + b_t_reg) %>%
+      pull(pred)
+
+      model_size_all_reg <<- round(  # Using <<- to assign it globally outside of the function.
+          sum(
+            object.size(mu_reg),
+            object.size(b_i_reg),
+            object.size(b_u_reg),
+            object.size(b_g_reg),
+            object.size(b_y_reg),
+            object.size(b_t_reg),
+            object.size(predicted_ratings_b_i_u)
+          ) / (1024^2),  # Convert to MB
+          4
+        )
+  
+  return(list(RMSE = RMSE(final_holdout_test$rating, predicted_ratings_b_i_u), Model_Size = model_size_all_reg))
+}
+    
+# Calculate training time and RMSE for different lambdas using sapply.
+training_time_all_reg <- system.time({
+  for (i in seq_along(lambdas)) {
+    result <- calculate_RMSE_reg_all(edx_title_time, final_holdout_test, lambdas[i])
+    rmses_all[i] <- result$RMSE
+    model_size_all_reg[i] <- result$Model_Size
+  }
+})
+
+# Plot RMSE values for different lambdas.
+ggplot(data = data.frame(lambdas, rmses_all), aes(x = lambdas, y = rmses_all)) +
+  geom_point(color = "blue") +
+  geom_line(color = "red") +
+  labs(
+    title = "RMSE vs. Lambda",
+    x = "Lambda",
+    y = "RMSE"
+  ) +
+  theme_minimal()
+```
+Here I've included all the parameters grouped by movieId, userId, genres, year and then date. The equations can be shown as:
+
+movieID: $$\hat{b}_i(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu}\right)$$
+userID: $$\hat{b}_u(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu} - \hat{b}_i \right)$$
+genres: $$\hat{b}_u(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu} - \hat{b}_g \right)$$
+year: $$\hat{b}_u(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu} - \hat{b}_y \right)$$
+date: $$\hat{b}_u(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu} - \hat{b}_t \right)$$
+\
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Find the optimal lambda.
+optimal_lambda_all <- lambdas[which.min(rmses_all)]
+cat("Optimal Lambda: ", optimal_lambda_all, "\n")
+
+rmse_regularised_all <- min(rmses_all)
+# Save the results of Regularised Movie + User + Time + Genre + Year effect model
+saveRDS(list(rmse = rmse_regularised_all, time = training_time_all_reg["elapsed"], size = model_size_all_reg[1]), file = "regularised_all_effect_model.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load model results.
+regularised_all_effect_model <- readRDS(file.path(workingDirectory, "regularised_all_effect_model.rds"))
+
+# Calculate results for full model with the optimal lambda.
+rmse_regularised_userID <- min(rmses_userID)
+cat("RMSE for Full Model with Regularisation: ", regularised_all_effect_model$rmse, "\n")
+cat("Training Time:", round(regularised_all_effect_model$time["elapsed"], 4), "sec\n")
+cat("Model size:", regularised_all_effect_model$size, "MB", "\n")
+
+```
+
+Including all the variables slightly increases the RMSE from 0.865 to 0.87. As the regularisation is increasing the RMSE, it suggests that the penalties are influencing the model in a way that leads to less accurate predictions on the dataset. This can occur if $λ$ is set too high, causing the model to underfit the data. In more simple terms, the regularisation might be too heavy, smoothing the data too much, and causing the model to become too simplistic and unable to capture the underlying patterns effectively.
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Summarise the RMSE values on the validation set for the linear regression models.
+rmse_results <- data.frame(
+  Method = c("Mu", "Movie Effect", "Movie + User Effects", "Movie + User + Time Effects", "Movie + User + Genre Effects", "Movie + User + Year Effects", "Movie + User + Time + Genre + Year Effects", "Regularised Movie + User Effect", "Regularised User + Movie Effect", "Regularised Movie + User + Time + Genre + Year Effect"),
+  
+  RMSE = c(mu_model$rmse, movie_effect_model$rmse, movie_user_effect_model$rmse, movie_user_time_effect_model$rmse, movie_user_genre_effect_model$rmse, movie_user_year_effect_model$rmse, movie_user_time_genre_year_effect_model$rmse, regularised_movie_user_effect_model$rmse, regularised_user_movie_effect_model$rmse, regularised_all_effect_model$rmse),
+  
+  Time = c(mu_model$time, movie_effect_model$time, movie_user_effect_model$time, movie_user_time_effect_model$time, movie_user_genre_effect_model$time, movie_user_year_effect_model$time, movie_user_time_genre_year_effect_model$time, regularised_movie_user_effect_model$time, regularised_user_movie_effect_model$time, regularised_all_effect_model$time),
+  
+  Size = c(mu_model$size, movie_effect_model$size, movie_user_effect_model$size, movie_user_time_effect_model$size, movie_user_genre_effect_model$size, movie_user_year_effect_model$size, movie_user_time_genre_year_effect_model$size, regularised_movie_user_effect_model$size, regularised_user_movie_effect_model$size, regularised_all_effect_model$size)
+)
+
+# Rename the columns to replace full stops with spaces.
+colnames(rmse_results) <- gsub("Time", "Time (sec)", colnames(rmse_results))
+colnames(rmse_results) <- gsub("Size", "Size (MB)", colnames(rmse_results))
+
+# Display the results in a PDF-compatible table
+kable(
+  rmse_results, 
+  format = "latex", 
+  booktabs = TRUE, 
+  caption = "Results for Linear Regression"
+) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position", "scale_down"),
+    position = "center"
+  ) %>%
+  add_header_above(c("Linear Regression" = 4))
+```
+
+Through the execution of multiple Linear Regression models, it becomes evident that user and movie effects stand out as the most influential variables for predicting ratings. Although the inclusion of additional variables and, in some instances, regularisation techniques marginally reduce the RMSE values, the magnitude of this improvement is negligible compared to the additional computational resources required. Thus, the practical benefits of incorporating these additional complexities are not justified. 
+
+\pagebreak
+
+## Recommender Engines
+Now I will briefly explore the recommenderlab package, which contains a set of algorithms specifically designed for making recommendations using collaborative filtering. The package doesn't accept training and test datasets outlined in this report's confines. Instead, the functions automatically split the data. However, a brief exploration and discussion of some of its features will provide valuable insight into the realm of possibilities.
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Set the seed for reproducibility.
+set.seed(42)
+
+# Create an evaluation scheme with a 60-40 train-test split.
+evaluation_scheme <- evaluationScheme(ratings_movies, method = "split", train = 0.6, given = -2)
+
+# Exclude 5 ratings of 30% of users for testing.
+model_popular <- Recommender(getData(evaluation_scheme, "train"), 
+                             method = "POPULAR")
+
+# Make predictions on the test set.
+predictions_popular <- predict(model_popular, getData(evaluation_scheme, "known"), type = "ratings")
+
+# Calculate RMSE for the POPULAR algorithm.
+rmse_popular <- calcPredictionAccuracy(predictions_popular, getData(evaluation_scheme, "unknown"))[1]
+
+# Save the POPULAR RMSE
+saveRDS(rmse_popular, file = "rmse_popular.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load the POPULAR RMSE.
+rmse_popular <- readRDS(file.path(workingDirectory, "rmse_popular.rds"))
+
+# Print results.
+rmse_popular
+```
+
+First I explored the popular algorithm which is a is a non-personalised algorithm that recommends to all users the most popular items they have not rated yet. It acts as a good benchmark for assessing the performance of the personalised algorithms. The algorithm achieved an RMSE score of 0.8146, which is already better than my lowest score using linear regression. 
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Create a user-based collaborative filtering (UBCF) recommender model using Cosine similarity and 350 neighbors based on cross-validation.
+set.seed(42)
+
+user_based_collaborative_filtering_model <- Recommender(getData(evaluation_scheme, "train"),
+                          method = "UBCF",
+                          param = list(normalize = "center", method = "Cosine", nn = 350, shrink = 10, lambda = 0.01)
+
+)
+
+ubcf_prediction <- predict(user_based_collaborative_filtering_model, getData(evaluation_scheme, "known"), type = "ratings")
+
+rmse_ubcf <- calcPredictionAccuracy(ubcf_prediction, getData(evaluation_scheme, "unknown"))[1]
+
+# Save the UBCF RMSE
+saveRDS(rmse_ubcf, file = "rmse_ubcf.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load the UBCF RMSE
+rmse_ubcf <- readRDS(file.path(workingDirectory, "rmse_ubcf.rds"))
+
+# Print results.
+rmse_ubcf
+```
+
+Next I explored the packages user-based collaborative filtering algorithm, which predicts ratings by aggregating the ratings of users who have a similar rating history to the user receiving the recommendation. Center normalisation subtracts the mean rating of each user from their ratings, cosine similarity measures the cosine of the angle between two vectors in a multi-dimensional space, and "nn" specifies the number of nearest neighbors to consider when making recommendations. Choosing an appropriate number of neighbors is crucial for the performance of the recommendation system. A higher value of nn may capture more diverse preferences but can also introduce noise, while a lower value may lead to underfitting and missing out on relevant recommendations. Given my chosen parameters I managed to obtain a much better RMSE of 0.779. 
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Create an item-based collaborative filtering (IBCF) recommender model using Cosine similarity and 350 neighbors based on cross-validation.
+item_based_collaborative_filtering_model <- Recommender(getData(evaluation_scheme, "train"),
+                          method = "IBCF",
+                          param = list(normalize = "center", method = "Cosine", k = 350)
+)
+
+ibcf_prediction <- predict(item_based_collaborative_filtering_model, getData(evaluation_scheme, "known"), type = "ratings")
+
+rmse_ibcf <- calcPredictionAccuracy(ibcf_prediction, getData(evaluation_scheme, "unknown"))[1]
+
+saveRDS(rmse_ibcf, file = "rmse_ibcf.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load the IBCF RMSE.
+rmse_ibcf <- readRDS(file.path(workingDirectory, "rmse_ibcf.rds"))
+
+# Print results.
+rmse_ibcf
+```
+
+Finally, I explored the item-based collaborative filtering algorithm with the same set of tuning parameters. Given my earlier exploration of linear regression models using the difference in movie ratings based on users compared to user ratings based on movies, I congruently obtained a higher RMSE score of 0.801.
+
+\pagebreak
+
+## Slope One
+Next, I explored the Slope One algorithm. Slope One was introduced in a 2005 paper by Daniel Lemire and Anna Maclachlan. Unlike linear regression, which estimates a model using equations like $f(x)=ax+b$, Slope One utilises a simpler form of regression with a single free parameter represented as $f(x)=x+b$. This simplicity avoids the need for complex parameter estimation as in Linear Regression, meaning it scales more easily, and can be less susceptible to overfitting due to capturing too much noise in the training data. Slope One's simplicity can help mitigate this issue by not introducing unnecessary complexity into the model. In some instances, Slope One has been shown to be much more accurate than linear regression, especially in sparse datasets, and it requires half the storage or less compared to more complex models.
+
+Slope One requires specific data formatting, therefore, the following steps are necessary for training the model.
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Clear unused memory.
+invisible(gc())
+
+# Slope One Recommender
+# Create copies of training (edx) and validation sets, retaining only essential columns.
+# - "genres," "title," and "timestamp" are excluded.
+edx.copy <- edx_title_year %>%
+  select(-c("genres", "title", "timestamp"))
+
+valid.copy <- final_holdout_test %>%
+  select(-c("genres", "title", "timestamp"))
+
+# Rename columns in valid.copy to "user_id," "item_id," and "rating".
+names(edx.copy) <- c("user_id", "item_id", "rating")
+names(valid.copy) <- c("user_id", "item_id", "rating")
+
+# Convert to a data.tables.
+edx.copy <- data.table(edx.copy)
+valid.copy <- data.table(valid.copy)
+
+# Convert user_id and item_id columns to character in edx.copy.
+edx.copy[, user_id := as.character(user_id)]
+edx.copy[, item_id := as.character(item_id)]
+valid.copy[, user_id := as.character(user_id)]
+valid.copy[, item_id := as.character(item_id)]
+
+# Set key to sort data.tables and mark them as sorted for efficient memory usage.
+setkey(edx.copy, user_id, item_id)
+setkey(valid.copy, user_id, item_id)
+
+# Split data to create a small training sample to address RAM memory issues.
+idx <- createDataPartition(y = edx.copy$rating, times = 1, p = 0.5, list = FALSE)
+edx.copy_train <- edx.copy[idx, ]
+
+# Normalise ratings in the training set.
+ratings_train_norm <- normalize_ratings(edx.copy_train)
+
+# Build a Slope One model using the training set with normalised ratings.
+# Calculate training time.
+training_time_slope_one <- system.time({
+  
+  model <- build_slopeone(ratings_train_norm$ratings)
+
+  # Clear unused memory.
+  invisible(gc())
+  
+  # Make predictions using the Slope One model on the validation set.
+  predictions <- predict_slopeone(
+    model,
+    valid.copy[, c(1, 2), with = FALSE],
+    ratings_train_norm$ratings
+  )
+  
+  # Unnormalise the predictions using the original rating scale.
+  unnormalised_predictions <- unnormalize_ratings(
+    normalized = ratings_train_norm,
+    ratings = predictions
+  )
+  
+  # Calculate Root Mean Squared Error (RMSE) for the Slope One model.
+  rmse_slopeone <- RMSE(valid.copy$rating, unnormalised_predictions$predicted_rating)
+  
+  model_size_slope_one <<- round(  # Using <<- to assign it globally outside of the function.
+  sum(
+    object.size(edx.copy),
+    object.size(valid.copy),
+    object.size(idx),
+    object.size(edx.copy_train),
+    object.size(ratings_train_norm),
+    object.size(model),
+    object.size(predictions),
+    object.size(unnormalised_predictions),
+    object.size(rmse_slopeone)
+  ) / (1024^2),  # Convert to MB
+  4
+)
+
+# Remove the created copies of sets to free up memory.
+rm(edx.copy, valid.copy, edx.copy_train)
+  
+  
+})
+
+# Save the SlopeOne results
+saveRDS(list(rmse = rmse_slopeone, time = training_time_slope_one, size = model_size_slope_one), file = "slopeone_model_results.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load the SlopeOne results.
+slopeone_results <- readRDS(file.path(workingDirectory, "slopeone_model_results.rds"))
+
+# Display the results for the Slope One model.
+cat("RMSE for Slope One: ", slopeone_results$rmse, "\n")
+cat("Training Time:", round(slopeone_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", slopeone_results$size, "MB", "\n")
+
+```
+
+Using the Slope One algorithm I was able to obtain an RMSE score of 0.864. Which is only slightly better than the Linear Regression model. Furthermore, the training time was substantially longer, with much more space taken in memory. However, the RMSE score was based on only 50% of the dataset due to my machines RAM limitations Therefore, there should be a note of caution, as the entire dataset might produce significantly better results.
+
+\pagebreak
+
+## Matrix Factorisation
+In the context of recommender systems, matrix factorisation is a widely used technique to predict user-item ratings. The basic idea is to approximate the original rating matrix $R$ with the product of two lower-dimensional matrices: $P$ and $Q$. 
+
+Let $p_u$ denote the latent factors of user $u$, represented by the $u$-th column of matrix $P$, and $q_v$ denote the latent factors of item $v$, represented by the $v$-th column of matrix $Q$. The predicted rating given by user $u$ on item $v$ is then computed as the dot product of $p_u$ and $q_v$: $p_u^{\prime} q_v$.
+
+One common approach to determine the matrices $P$ and $Q$ involves solving a regularisation problem, which can be formularised as:
+
+$$
+\min_{P,Q} \sum_{(u,v)} f(r_{u,v}, p_u^{\prime} q_v) + \mu_P ||P||^2_F + \mu_Q ||Q||^2_F + \lambda_P ||P||_F + \lambda_Q ||Q||_F
+$$
+
+Here, $(u,v)$ represents the observed entries in matrix $R$, $r_{u,v}$ is the observed rating, $f$ is the loss function, and $\mu_P$, $\mu_Q$, $\lambda_P$, $\lambda_Q$ are regularisation parameters to prevent overfitting.
+
+In this optimisation problem, the objective is to minimise the difference between observed ratings and predicted ratings while penalising the complexity of matrices $P$ and $Q$ to avoid overfitting.
+
+To predict the rating for item $i$ by user $u$, I simply compute the dot product of the transpose of $p_u$ and $q_i$: $p_u^{\prime} q_i$.
+
+First I started with recosystems recommendation engine, that uses stochastic gradient descent for optimisation of an objective function's optimum value. The package comes with a set of tunable parameters: 
+
+dim specifies the dimensions of the latent feature space. It's a vector containing three values. These values represent the number of latent factors used by the model. Changing this parameter directly influences the model's capacity to represent the underlying structure of the data. Increasing the dimensionality can enhance the model's ability to capture intricate patterns but may also increase the risk of overfitting.
+
+lrate represents the learning rate used during training. It's a vector containing two values that control the step size during optimisation and affect how quickly the model learns. Changing this parameter impacts the model's training dynamics. Adjusting it too high may lead to unstable convergence or overshooting of the optimal solution, while setting it too low may result in slow convergence or getting stuck in local minima.
+
+nthread defines the number of threads to be used during training. Changing this parameter affects the degree of parallelism employed during training. Utilising multiple threads can significantly speed up training on multi-core processors but may also introduce overhead and contention in resource-limited environments.
+
+niter represents the number of iterations or epochs used during training. This parameter determines how many times the entire training dataset is passed through the model during training. Changing this parameter directly impacts the duration and depth of the training process. Increasing the number of iterations may improve the model's convergence and generalisation performance, but it also incurs higher computational costs and longer training times.
+
+For my first model, I kept the variables stored in my random access memory (RAM). RAM is fast, but potentially more volatile. 
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+set.seed(42)
+
+# Calculate training time.
+training_time_recosystem_matrix_factorisation <- system.time({
+  
+  train_recosystem <- with(edx, data_memory(user_index = userId, 
+                                                  item_index = movieId,
+                                                  rating     = rating))
+  
+  test_recosystem <- with(final_holdout_test, data_memory(user_index = userId, 
+                                                item_index = movieId, 
+                                                rating     = rating))
+  
+  recommendation_system <- Reco()
+  
+  tuning <- recommendation_system$tune(train_recosystem, 
+                                       opts = list(dim = c(10, 20, 30),
+                                                   lrate = c(0.1, 0.2),
+                                                   nthread  = 1,
+                                                   niter = 10))
+  
+  recommendation_system$train(train_recosystem, 
+                              opts = c(tuning$min,
+                                       nthread = 1,
+                                       niter = 20))
+  
+  predicted_ratings_MF <-  recommendation_system$predict(test_recosystem, out_memory())
+  
+  rmse_recosystem_matrix_factorisation <- RMSE(final_holdout_test$rating, predicted_ratings_MF)
+
+  model_size_recosystem_matrix_factorisation <<- round(  # Using <<- to assign it globally outside of the function.
+    sum(
+      object.size(train_recosystem),
+      object.size(test_recosystem),
+      object.size(recommendation_system),
+      object.size(tuning),
+      object.size(predicted_ratings_MF),
+      object.size(rmse_recosystem_matrix_factorisation)
+    ) / (1024^2),  # Convert to MB
+    4
+  )
+})
+
+# Save the Matrix Factorization (RAM) results
+saveRDS(list(rmse = rmse_recosystem_matrix_factorisation, time = training_time_recosystem_matrix_factorisation, size = model_size_recosystem_matrix_factorisation), file = "matrix_factorization_ram_results.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load the Matrix Factorisation (RAM) results.
+mf_ram_results <- readRDS(file.path(workingDirectory, "matrix_factorization_ram_results.rds"))
+
+# Display the RMSE for the RAM Matrix Factorisation using RAM.
+cat("RMSE for RAM Matrix Factorisation:", mf_ram_results$rmse, "\n")
+cat("Training Time:", round(mf_ram_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", mf_ram_results$size, "MB", "\n")
+```
+
+Using Matrix Factorisation while storing the dataset in RAM, I was able to achieve a RMSE score of 0.784. 
+
+Next I decided to investigate using a different method for storing the datasets. Storing the dataset on disk and later reloading it before model training adds an extra step to the data processing pipeline. However, for large datasets that push a processing unit's memory to capacity, this step might become essential to facilitate the operation. Moreover, by offloading data to disk, the model can access the entire dataset without memory limitations, potentially enhancing model accuracy. For example, by using disk space over RAM, I can reduce memory-related glitches during training, improve noise, and enable faster data retrieval and processing, thereby potentially enhancing model performance. 
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+## Before performing Matrix Factorisation (MF) method, clear unused memory.
+invisible(gc())
+
+# Matrix Factorisation with parallel stochastic gradient descent.
+# Calculate training time.
+# Create copies of training test and validation sets, retaining only essential columns.
+# - "genres," "title," and "timestamp" are excluded.
+training_time_disk_matrix_factorisation <- system.time({
+  
+edx.copy <- edx %>%
+  select(-c("genres", "title", "timestamp"))
+names(edx.copy) <- c("user", "item", "rating")
+
+valid.copy <- final_holdout_test %>%
+  select(-c("genres", "title", "timestamp"))
+names(valid.copy) <- c("user", "item", "rating")
+
+# Convert edx.copy and valid.copy to matrices.
+edx.copy <- as.matrix(edx.copy)
+valid.copy <- as.matrix(valid.copy)
+
+# Write edx.copy and valid.copy tables to disk.
+write.table(edx.copy, file = "trainset.txt", sep = " ", row.names = FALSE, col.names = FALSE)
+write.table(valid.copy, file = "validset.txt", sep = " ", row.names = FALSE, col.names = FALSE)
+
+# Specify data sets from files on the hard disk using data_file().
+train_set <- file.path(workingDirectory, "trainset.txt")
+valid_set <- file.path(workingDirectory, "validset.txt")
+
+# Build a Recommender object for Matrix Factorisation.
+recommender <- Reco()
+
+# Matrix Factorisation: Tune hyperparameters on the training set.
+opts <- recommender$tune(
+  train_set,
+  opts = list(
+    dim = c(10, 20, 30),
+    lrate = c(0.1, 0.2),
+    costp_l1 = 0,
+    costq_l1 = 0,
+    nthread = 1,
+    niter = 10
+  )
+)
+
+# Matrix Factorisation: Train the recommender model.
+recommender$train(train_set, opts = c(opts$min, nthread = 1, niter = 20))
+
+# Making predictions on the validation set and calculating RMSE.
+pred_file <- tempfile()
+recommender$predict(valid_set, out_file(pred_file))
+
+# Load the true ratings from the validation set.
+scores_real <- read.table("validset.txt", header = FALSE, sep = " ")$V3
+
+# Load predicted ratings from the temporary prediction file.
+scores_pred <- scan(pred_file)
+
+# Calculate RMSE for Matrix Factorisation.
+rmse_to_disk_matrix_factorisation <- RMSE(scores_real, scores_pred)
+
+model_size_disk_matrix_factorisation <<- round(  # Using <<- to assign it globally outside of the function.
+  sum(
+    object.size(edx.copy),
+    object.size(valid.copy),
+    object.size(train_set),
+    object.size(valid_set),
+    object.size(recommender),
+    object.size(pred_file),
+    object.size(scores_real),
+    object.size(scores_pred),
+    object.size(rmse_to_disk_matrix_factorisation)
+  ) / (1024^2),  # Convert to MB
+  4
+)
+
+# Remove copies of training and validation sets to free up memory.
+rm(edx.copy, valid.copy)
+
+})
+
+# Save the trained model using saveRDS
+saveRDS(recommender, "matrix_factorization_model_recommender.rds")
+
+# Save the Matrix Factorization (Disk) results
+saveRDS(list(rmse = rmse_to_disk_matrix_factorisation, time = training_time_disk_matrix_factorisation, size = model_size_disk_matrix_factorisation), file = "matrix_factorization_disk_results.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load the Matrix Factorization (Disk) results.
+mf_disk_results <- readRDS(file.path(workingDirectory, "matrix_factorization_disk_results.rds"))
+
+# Display the RMSE for Disk Matrix Factorisation model.
+cat("RMSE for Disk Matrix Factorisation: ", mf_disk_results$rmse, "\n")
+cat("Training Time:", round(mf_disk_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", mf_disk_results$size, "MB", "\n")
+
+```
+
+By using matrix factorisation with data read from disk memory, I improved the RMSE score slightly to 0.783. This improvement may be due to differences in how the algorithms utilise available resources and round floating-point values. Additionally, the data loading process might vary slightly. Matrix factorisation algorithms often involve random initialisation of latent factors, and even with the same random seed, implementation differences can lead to variations in these initial values. Furthermore, the stochastic nature of gradient descent can cause slight variations in data processing and updates, especially if the data is chunked differently for disk-based processing.
+
+Another notable finding pertained to the variance in training time. Traditionally, RAM outpaces disk access in speed. However, the disk-based algorithm exhibited notably quicker performance despite the larger model size. This discrepancy may stem from scenarios where the dataset surpasses available RAM, triggering memory swapping or suboptimal memory handling. In memory swapping, inactive portions of the dataset are moved from RAM to disk, potentially impeding the training process by necessitating subsequent retrieval.
+
+Conversely, the disk-based approach operates by streaming or processing data in smaller, more manageable portions instead of loading the entire dataset into memory at once, as in RAM. This methodology effectively reduces the memory footprint and mitigates the necessity for swapping, thus contributing to enhanced efficiency.
+
+Next I decided to investigate the other commonly used algorithm in Matrix Factorisation, Alternating Least Squared Means (ALS). ALS is particularly effective for large-scale recommendation problems because it can be parallelised easily. By alternating between updating the user and item factors, ALS gradually improves the quality of the latent factor representations until convergence.
+
+I also decided to investigate using Apache Spark which is an open-source unified analytics engine for large-scale data processing. It automatically analyses the jobs operations and distributes the work across the multiple nodes in the cluster.
+
+Spark achieves parallelism through a concept called Resilient Distributed Datasets (RDDs). RDDs represent distributed collections of objects across the cluster, and automatically partition and distribute themselves across the nodes in the cluster, allowing parallel processing of data. RDDs are the fundamental data structures in Spark, meaning I must initially convert the dataframes into a format that Spark can work with. Additionally, Spark leverages in-memory computing and caching to minimise data movement across the cluster, further improving performance by reducing disk I/O (input/output) and network overhead.
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Before performing Matrix Factorisation (MF) method, clear unused memory.
+invisible(gc())
+
+small_edx <- edx[1:2000000, ]  # Adjust the number of rows as needed
+small_final_holdout_test <- final_holdout_test[1:2000000, ]  # Adjust the number of rows as needed
+
+# Calculate training time.
+training_time_als_spark <- system.time({
+# Set Spark configurations with increased memory and additional JVM options
+config <- spark_config()  # Initialize a Spark configuration object.
+
+config$spark.executor.memory <- "16g"  # Increase executor memory.
+config$spark.executor.cores <- 4  # Allocate 4 CPU cores to each executor.
+config$spark.executor.instances <- 4  # Set the number of executor instances to 4.
+config$spark.sql.shuffle.partitions <- 400  # Specify the number of partitions for shuffle operations.
+config$spark.driver.memory <- "16g"  # Increase driver memory.
+config$spark.driver.maxResultSize <- "8g"  # Increase max result size.
+config$spark.driver.extraJavaOptions <- "-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp"  # Add Java options to the driver for improved garbage collection and heap dump handling.
+config$spark.executor.extraJavaOptions <- "-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp"  # Add Java options to the executors for similar benefits.
+
+# Function to handle null values and convert to integer.
+prepare_data <- function(df) {
+  df %>%
+    mutate(
+      user = ifelse(is.na(userId), -1L, as.integer(userId)),   # Convert userId to integer and handle NAs.
+      item = ifelse(is.na(movieId), -1L, as.integer(movieId))  # Convert movieId to integer and handle NAs.
+    ) %>%
+    filter(user != -1 & item != -1)  # Filter out rows with NAs
+}
+
+copy_data_in_batches <- function(df, df_name, batch_size = 500000) {
+  # Function to copy data into Spark in batches to manage large datasets. df: The input data frame to be copied. df_name: The base name for the Spark data frame(s). batch_size: The number of rows per batch (default is 500,000).
+
+  total_rows <- nrow(df) # Get the total number of rows in the input data frame.
+
+  combined_sdf <- NULL # Initialise a variable to store the combined Spark data frame.
+
+  for (start_row in seq(1, total_rows, by = batch_size)) { # Loop through the data frame in increments of `batch_size`.
+
+    end_row <- min(start_row + batch_size - 1, total_rows) # Calculate the ending row for the current batch, ensuring it doesn't exceed total rows.
+
+    batch <- df[start_row:end_row, ] # Extract a batch of rows from the input data frame.
+
+    sdf_batch <- sdf_copy_to(sc, batch, name = paste0(df_name, "_batch_", start_row), overwrite = TRUE) %>% # Copy the batch to Spark, creating a temporary Spark data frame with a unique name.
+      sdf_repartition(8, partition_by = "user") # Repartition the Spark data frame into 8 partitions, grouped by the "user" column.
+
+    if (is.null(combined_sdf)) { # If this is the first batch, initialize the combined Spark data frame.
+      combined_sdf <- sdf_batch
+    } else { # Otherwise, append the current batch to the combined Spark data frame.
+      combined_sdf <- sdf_bind_rows(combined_sdf, sdf_batch)
+    }
+  }
+
+  combined_sdf <- sdf_register(combined_sdf, name = df_name) %>% # Register the combined Spark data frame with the given name for further use.
+    sdf_persist(storage.level = "MEMORY_AND_DISK") # Persist the Spark data frame in memory and disk to optimise performance.
+
+  return(combined_sdf) # Return the combined Spark data frame.
+}
+
+  sc <- spark_connect(master = "local[*]", config = config)
+  
+  # Prepare training data.
+  tic("Prepare training data")
+  sdf_MovieLense_Train <- small_edx %>% prepare_data()
+  toc()
+  
+  # Prepare testing data.
+  tic("Prepare testing data")
+  sdf_MovieLense_Test <- small_final_holdout_test %>% prepare_data()
+  toc()
+  
+  # Copy and combine training data to Spark.
+  tic("Copy training data to Spark")
+  edx_spark <- copy_data_in_batches(sdf_MovieLense_Train, "small_edx")
+  toc()
+  
+  # Copy and combine testing data to Spark.
+  tic("Copy testing data to Spark")
+  final_holdout_test_spark <- copy_data_in_batches(sdf_MovieLense_Test, "small_final_holdout_test")
+  toc()
+  
+  # Training.
+  tic("ALS Model Training - sparklyr")
+  sdf_als_model <- ml_als(edx_spark, rating_col = "rating", user_col = "user", item_col = "item", rank = 10, reg_param = 0.1, max_iter = 5)
+  toc()
+  
+  # Predicting.
+  tic("ALS Model Predicting - sparklyr")
+  prediction <- ml_transform(sdf_als_model, final_holdout_test_spark) %>% collect()
+  toc()
+  
+  # Calculate model size.
+  model_size_als <<- round(
+    sum(
+      object.size(sdf_MovieLense_Train),
+      object.size(sdf_MovieLense_Test),
+      object.size(edx_spark),
+      object.size(final_holdout_test_spark),
+      object.size(sdf_als_model),
+      object.size(prediction)
+    ) / (1024^2),  # Convert to MB
+    4
+  )
+  
+  # Disconnect from Spark.
+  spark_disconnect(sc)
+})
+
+#Calculate RMSE.
+rmse_als_spark <- RMSE(prediction$rating, prediction$prediction)
+
+# Save the ALS (Spark) results.
+saveRDS(list(rmse = rmse_als_spark, time = training_time_als_spark, size = model_size_als), file = "als_spark_results.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load the ALS (Spark) results.
+als_spark_results <- readRDS(file.path(workingDirectory, "als_spark_results.rds"))
+
+# Print results.
+cat("RMSE for Alternating Least Square Means: ", als_spark_results$rmse, "\n")
+cat("Training Time:", round(als_spark_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", als_spark_results$size, "MB", "\n")
+```
+
+Using ALS combined with spark, I was able to obtain an RMSE of 0.845. However, this used only one fifth of the data, due to the resource constraints of my machine. With the adequate hardware this number could be significantly lower, with a very fast computation time. 
+
+Next I ran another Alternative Least Square Algorithm, using the recommednerlab package. I kept the partition of data the same as the spark version, to allow me to compare and contrast the two.
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Sample the data
+small_edx <- edx[1:2000000, ]
+small_final_holdout_test <- final_holdout_test[1:2000000, ]
+
+# Calculate training time.
+training_time_als_recommenderlab <- system.time({
+  # Convert data frames to data.tables.
+  small_edx <- as.data.table(small_edx)
+  small_final_holdout_test <- as.data.table(small_final_holdout_test)
+
+  # Prepare data function to handle NAs and convert to integers.
+  prepare_data <- function(df) {
+    df[, user := as.integer(factor(userId))]
+    df[, item := as.integer(factor(movieId))]
+    df <- df[complete.cases(df), ]  # Remove rows with NA values.
+    df
+  }
+
+  # Prepare training and testing data.
+  small_edx <- prepare_data(small_edx)
+  small_final_holdout_test <- prepare_data(small_final_holdout_test)
+
+  # Create a sparse matrix for training.
+  rating_matrix <- as(small_edx, "realRatingMatrix")
+
+  # ALS model training with hyperparameters.
+  als_model <- Recommender(rating_matrix, method = "ALS", parameter = list(
+    n_factors = 20,      # Number of latent factors.
+    lambda = 0.1,        # Regularisation parameter.
+    n_iterations = 10    # Number of iterations.
+  ))
+
+  # Prediction.
+  predictions <- predict(als_model, rating_matrix)
+
+  # Extract actual ratings from the testing data.
+  actual_ratings <- as(small_final_holdout_test, "realRatingMatrix")
+
+  # Convert predictions to a regular matrix.
+  predictions_matrix <- as(predictions, "matrix")
+  actual_ratings_matrix <- as(actual_ratings, "matrix")
+
+  # Get common users and items.
+  common_users <- intersect(rownames(predictions_matrix), rownames(actual_ratings_matrix))
+  common_items <- intersect(colnames(predictions_matrix), colnames(actual_ratings_matrix))
+
+  # Subset predictions and actual ratings.
+  predictions_subset <- predictions_matrix[common_users, common_items]
+  actual_ratings_subset <- actual_ratings_matrix[common_users, common_items]
+  
+  # Calculate RMSE.
+  rmse_als_recommenderlab <- RMSE(actual_ratings_subset, predictions_subset)
+
+  # Calculate model size.
+  model_size_als_recommenderlab <<- round(
+    sum(
+      object.size(predictions_matrix),
+      object.size(prepare_data),
+      object.size(small_edx),
+      object.size(small_final_holdout_test),
+      object.size(rating_matrix),
+      object.size(als_model),
+      object.size(predictions),
+      object.size(actual_ratings_matrix),
+      object.size(common_users),
+      object.size(common_items),
+      object.size(predictions_subset),
+      object.size(actual_ratings_subset),
+      object.size(rmse_als_recommenderlab)
+    ) / (1024^2),  # Convert to MB
+    4
+  )
+  
+})
+
+# Save the ALS (RecommenderLab) results.
+saveRDS(list(rmse = rmse_als_recommenderlab, time = training_time_als_recommenderlab, size = model_size_als_recommenderlab), file = "als_recommenderlab_results.rds")
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load the ALS (RecommenderLab) results.
+als_recommenderlab_results <- readRDS(file.path(workingDirectory, "als_recommenderlab_results.rds"))
+
+#Print results. 
+cat("RMSE for Alternating Least Square Means: ", als_recommenderlab_results$rmse, "\n")
+cat("Training Time:", round(als_recommenderlab_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", als_recommenderlab_results$size, "MB", "\n")
+```
+
+Using ALS means from the recommenderlab package, I was able to obtain an RMSE score of 0.96.
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Summarise the RMSE values on the validation set for the linear regression models.
+rmse_results <- data.frame(
+  Method = c("SlopeOne", "Matrix factorisation using RAM", "Matrix factorisation using Disk", "Alternating Least Squares using Spark", "Alternating Least Squares using Recommender"),
+  
+  RMSE = c(slopeone_results$rmse, mf_ram_results$rmse, mf_disk_results$rmse, als_spark_results$rmse, als_recommenderlab_results$rmse),
+  
+    Time = c(slopeone_results$time["elapsed"], mf_ram_results$time["elapsed"], mf_disk_results$time["elapsed"], als_spark_results$time["elapsed"], als_recommenderlab_results$time["elapsed"]),
+  
+    Size = c(slopeone_results$size, mf_ram_results$size, mf_disk_results$size,  als_spark_results$size, als_recommenderlab_results$size)
+)
+
+# Rename the columns to replace full stops with spaces.
+colnames(rmse_results) <- gsub("Time", "Time (sec)", colnames(rmse_results))
+colnames(rmse_results) <- gsub("Size", "Size (MB)", colnames(rmse_results))
+
+# Display RMSE results in a PDF-compatible table
+kable(
+  rmse_results, 
+  format = "latex", 
+  booktabs = TRUE, 
+  caption = "RMSE Results for Matrix Factorisation"
+) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position", "scale_down"),
+    position = "center"
+  ) %>%
+  add_header_above(c("Matrix Factorisation" = 4))
+
+# Clear unused memory.
+invisible(gc())
+```
+
+Among all the matrix factorization algorithms I explored, the disk-based Matrix Factorization delivers the best results. However, these results are somewhat dependent on the hardware used. The Alternating Least Squares and SlopeOne algorithms only utilise a subset of the data, therefore I can conclude that the results obtained may only be optimal on a machine with highly limited resources. 
+
+\pagebreak
+
+## Ensemble Methods
+Next I investigated a selection of ensemble methods, which combine the predictions of multiple individual models to improve overall performance. The basic idea behind ensemble methods is that I can merge the predictions of multiple weaker models into one stronger and more robust model.
+
+In addition, I explored the capabilities of H2O's open-source distributed in-memory machine learning platform, renowned for its linear scalability, facilitating the processing of exceptionally large datasets. This platform is equipped with a plethora of libraries specifically designed for executing ensemble methods, each serving distinct purposes. One such method is Gradient Boosting Decision Trees (GBDT), characterised by sequential training where each subsequent tree aims to rectify errors made by its predecessors.
+
+Another notable technique offered by the platform is Random Forests, which operate independently, utilising a random subset of features and a bootstrapped sample of the training data. These trees grow to their maximum depth without pruning, contributing to their robustness.
+
+Finally, the platform supports stacked ensembles, a sophisticated approach that amalgamates predictions from diverse base models. These base models, including GBDT, Random Forests, Support Vector Machines (SVM), and Neural Networks, are trained independently. Their predictions are then harmonized using a meta-learner, which essentially functions as a model that connects all the base layers. 
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Create a copy of the edx set, retaining all features.
+edx.copy <- edx
+
+# Add new columns for the number of movies each user rated (n.movies_byUser) and the number of users that rated each movie (n.users_bymovie).
+edx.copy <- edx.copy %>%
+  dplyr::group_by(userId) %>%
+  dplyr::mutate(n.movies_byUser = dplyr::n())
+
+edx.copy <- edx.copy %>%
+  dplyr::group_by(movieId) %>%
+  dplyr::mutate(n.users_bymovie = n())
+
+# Convert userId and movieId columns to factor vectors.
+edx.copy$userId <- as.factor(edx.copy$userId)
+edx.copy$movieId <- as.factor(edx.copy$movieId)
+
+# Repeat the same process for the validation set.
+valid.copy <- final_holdout_test
+
+valid.copy <- valid.copy %>%
+  dplyr::group_by(userId) %>%
+  dplyr::mutate(n.movies_byUser = n())
+
+valid.copy <- valid.copy %>%
+  dplyr::group_by(movieId) %>%
+  dplyr::mutate(n.users_bymovie = n())
+
+valid.copy$userId <- as.factor(valid.copy$userId)
+valid.copy$movieId <- as.factor(valid.copy$movieId)
+
+# Attempts to start and/or connect to an H2O instance.
+suppressMessages(
+  h2o.init(
+    nthreads = -1, ## -1: use all available threads.
+    max_mem_size = "10G"
+  )
+)
+
+# Clear all the objects from the H2O cluster
+h2o.removeAll()
+
+# Partitioning the data into training and testing sets.
+splits <- h2o.splitFrame(as.h2o(edx.copy),
+                         ratios = 0.7,
+                         seed = 1
+)
+
+train <- splits[[1]]
+test <- splits[[2]]
+
+# Clear unused memory.
+invisible(gc())
+
+```
+
+First, I investigated a gradient boosted decision tree (GBDT). The initial step involved training two different models. The first model was configured with 50 trees, a maximum tree depth of 5, a learning rate of 0.1, and 3-fold cross-validation. The features used for this model were movieId, userId, n.movies_byUser, and n.users_bymovie.
+
+The second model was similarly configured with 50 trees, a maximum depth of 5, a learning rate of 0.1, and 3-fold cross-validation. However, this model included a random seed for reproducibility, kept cross-validation predictions, and set fold assignment to random. The features for this model were limited to movieId and userId.
+
+After comparing the RMSE of the two models on the training set, I found that the second model exhibited a lower RMSE Therefore, I evaluated the second model on the test set.
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Remove progress bar for H2O operations.
+h2o.no_progress()
+
+# Calculate training time.
+training_time_gradient_boosted_decision_tree_1 <- system.time({
+  
+# First Gradient Boosting Machine (GBM) model:
+# Parameters: ntrees = 50, max depth = 5, learn rate = 0.1, nfolds = 3.
+gradient_boosted_decision_tree_1 <- h2o.gbm(
+  x = c("movieId", "userId", "n.movies_byUser", "n.users_bymovie"),
+  y = "rating",
+  training_frame = train,
+  nfolds = 3
+)
+
+# Display a summary of the first GBM model.
+summary(gradient_boosted_decision_tree_1)
+
+# Second GBM model:
+# Parameters: ntrees = 50, max depth = 5, learn rate = 0.1, nfolds = 3.
+gradient_boosted_decision_tree_2 <- h2o.gbm(
+  x = c("movieId", "userId"),
+  y = "rating",
+  training_frame = train,
+  nfolds = 3,
+  seed = 42,
+  keep_cross_validation_predictions = TRUE,
+  fold_assignment = "Random"
+)
+
+# Display a summary of the third GBM model.
+summary(gradient_boosted_decision_tree_2)
+
+# Since gradient_boosted_decision_tree_2 has the lower RMSE on the training set.
+# Evaluate performance on the test set.
+h2o.performance(gradient_boosted_decision_tree_2, test)
+
+# Predict ratings on the validation set and evaluate RMSE.
+pred.ratings.gradient_boosted_decision_tree_2 <- h2o.predict(gradient_boosted_decision_tree_2, as.h2o(valid.copy))
+
+rmse_gbdt <- RMSE(pred.ratings.gradient_boosted_decision_tree_2, as.h2o(valid.copy$rating))
+
+  # Calculate model size.
+  model_size_gradient_boosted_decision_tree_1 <<- round(
+    sum(
+      object.size(gradient_boosted_decision_tree_1),
+      object.size(gradient_boosted_decision_tree_2),
+      object.size(pred.ratings.gradient_boosted_decision_tree_2),
+      object.size(rmse_gbdt)
+    ) / (1024^2),  # Convert to MB.
+    4
+  )
+
+})
+
+# Save Gradient Boosting results.
+saveRDS(list(rmse = rmse_gbdt, time = training_time_gradient_boosted_decision_tree_1,size = model_size_gradient_boosted_decision_tree_1[1]), file = "gradient_boosting_results.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load Gradient Boosting results
+gradient_boosting_results <- readRDS(file.path(workingDirectory, "gradient_boosting_results.rds"))
+
+# Display Gradient Boosting results.
+cat("RMSE for Gradient Boosting: ", gradient_boosting_results$rmse, "\n")
+cat("Training Time:", round(gradient_boosting_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", gradient_boosting_results$size, "MB", "\n")
+
+# Clear unused memory.
+invisible(gc())
+```
+Using the GBDT method I was able to achieve a RMSE score of 0.987.  
+
+Next I investigated the performance of random forest models in the same manner. The initial random forest model was configured with 50 trees and a maximum tree depth of 20. The features used for this model were movieId, userId, timestamp, n.movies_byUser, and n.users_bymovie.
+
+Subsequently, a second random forest model was trained with a similar configuration of 50 trees and a maximum depth of 20, but with additional parameters for 3-fold cross-validation, a random seed for reproducibility, cross-validation predictions enabled, and random fold assignment. This model used only movieId and userId as predictors.
+
+After comparing the RMSE of the two models on the training set, I found that the second model had a lower RMSE. Consequently, I proceeded to evaluate the second model on the test.
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Remove progress bar for H2O operations.
+h2o.no_progress()
+
+# Calculate training time.
+training_time_random_forest <- system.time({
+
+# First Random Forest (RF) model:
+# Parameters: ntrees = 50, max depth = 20.
+random_forest_1 <- h2o.randomForest(
+  training_frame = train,
+  x = c("movieId", "userId", "timestamp", "n.movies_byUser", "n.users_bymovie"),
+  y = "rating",
+  ntrees = 50,
+  max_depth = 20
+)
+
+# Display a summary of the first RF model.
+summary(random_forest_1)
+
+# Third RF model:
+# Parameters: ntrees = 50, max depth = 20, nfolds = 3.
+random_forest_2 <- h2o.randomForest(
+  training_frame = train,
+  x = c("movieId", "userId"),
+  y = "rating",
+  nfolds = 3,
+  seed = 42,
+  keep_cross_validation_predictions = TRUE,
+  fold_assignment = "Random"
+)
+
+# Display a summary of the third RF model.
+summary(random_forest_2)
+
+# Since random_forest_2 has the lower RMSE on the training set,
+# Evaluate performance on the test set.
+h2o.performance(random_forest_2, test)
+
+# Predict ratings on the validation set and evaluate RMSE.
+pred.ratings.random_forest_2 <- h2o.predict(random_forest_2, as.h2o(valid.copy))
+
+rmse_rf <- RMSE(pred.ratings.random_forest_2, as.h2o(valid.copy$rating))
+
+  # Calculate model size.
+  model_size_random_forest <<- round(
+    sum(
+      object.size(random_forest_1),
+      object.size(random_forest_2),
+      object.size(pred.ratings.random_forest_2),
+      object.size(rmse_rf)
+    ) / (1024^2),  # Convert to MB.
+    4
+  )
+
+})
+
+# Save Random Forest results.
+saveRDS(list(rmse = rmse_rf, time = training_time_random_forest, size = model_size_random_forest[1]), file = "random_forest_results.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load Random Forest results.
+random_forest_results <- readRDS(file.path(workingDirectory, "random_forest_results.rds"))
+
+# Display Random Forest results.
+cat("RMSE for Random Forest: ", random_forest_results$rmse, "\n")
+cat("Training Time:", round(random_forest_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", random_forest_results$size, "MB", "\n")
+
+# Clear unused memory.
+invisible(gc())
+```
+Using the Random Forest ensemble method I was able to achieve a RMSE score of 0.953. 
+
+Finally, in an attempt to further enhance the accuracy of movie rating predictions, I implemented a stacked ensemble model, which combined the strengths of the previously developed gradient boosted decision tree and random forest models.
+
+The ensemble model was trained using movieId and userId as predictors. The stacked ensemble was created with the model_id "my_ensemble_auto" and included the gradient boosted decision tree and random forest models as base learners.
+
+This approach of using a stacked ensemble leverages the strengths of multiple learning algorithms, potentially leading to improved predictive performance. By combining the gradient boosted decision tree and random forest models, the ensemble model aimed to provide a more robust and accurate prediction of movie ratings compared to individual models.
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Calculate training time.
+training_time_ensemble <- system.time({
+  
+  # Stacked Ensemble: Using the best two previous models (gradient_boosted_decision_tree_2 and random_forest_2).
+ensemble <- h2o.stackedEnsemble(
+  x = c("movieId", "userId"),
+  y = "rating",
+  training_frame = train,
+  model_id = "my_ensemble_auto",
+  base_models = list(gradient_boosted_decision_tree_2@model_id, random_forest_2@model_id)
+)
+
+# Predict ratings on the validation set and evaluate RMSE.
+pred.ratings.ensemble <- h2o.predict(ensemble, as.h2o(valid.copy))
+
+# Calculate RMSE.
+rmse_ensemble <- RMSE(pred.ratings.ensemble, as.h2o(valid.copy$rating))
+
+  # Calculate model size.
+  model_size_ensemble <<- round(
+    sum(
+      object.size(random_forest_1),
+      object.size(ensemble),
+      object.size(pred.ratings.ensemble),
+      object.size(rmse_ensemble)
+    ) / (1024^2),  # Convert to MB.
+    4
+  )
+
+})
+
+# Save Stacked Ensemble results.
+saveRDS(list(rmse = rmse_ensemble, time = training_time_ensemble, size = model_size_ensemble[1]), file = "stacked_ensemble_results.rds")
+
+# Remove unnecessary objects to free up memory.
+rm(edx.copy, valid.copy)
+
+# Close the H2O cluster.
+h2o.shutdown()
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load Stacked Ensemble results
+stacked_ensemble_results <- readRDS(file.path(workingDirectory, "stacked_ensemble_results.rds"))
+
+# Display Stacked Ensemble results
+cat("RMSE for Stacked Ensemble: ", stacked_ensemble_results$rmse, "\n")
+cat("Training Time:", round(stacked_ensemble_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", stacked_ensemble_results$size, "MB", "\n")
+```
+Using the Stacked Ensemble method I was able to achieve a RMSE score of 0.952, which was ever so slightly better than the base models on their own. 
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Summarise the RMSE values on the validation set for the linear regression models.
+rmse_results <- data.frame(
+  Method = c("Gradient Boosting", "Random Forest", "Stacked Ensemble"),
+  
+  RMSE = c(gradient_boosting_results$rmse, random_forest_results$rmse, stacked_ensemble_results$rmse),
+  
+    Time = c(gradient_boosting_results$time["elapsed"], random_forest_results$time["elapsed"], stacked_ensemble_results$time["elapsed"]),
+  
+    Size = c(gradient_boosting_results$size, gradient_boosting_results$size, stacked_ensemble_results$size)
+)
+
+# Rename the columns to replace full stops with spaces.
+colnames(rmse_results) <- gsub("Time", "Time (sec)", colnames(rmse_results))
+colnames(rmse_results) <- gsub("Size", "Size (MB)", colnames(rmse_results))
+
+# Display RMSE results in a PDF-compatible table
+kable(
+  rmse_results, 
+  format = "latex", 
+  booktabs = TRUE, 
+  caption = "RMSE Results for Ensemble Methods"
+) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position", "scale_down"),
+    position = "center"
+  ) %>%
+  add_header_above(c("Ensemble Methods" = 4))
+```
+Looking across all the different ensemble methods, the GBDT model demonstrated an RMSE of 0.987, which indicates a moderate level of predictive accuracy. The training time for this model was 301.393 seconds, and the model size was 10.0507 MB. While the GBDT model was relatively quick to train, its predictive performance was slightly lower compared to the random forest and stacked ensemble models. The random forest model achieved a lower RMSE of 0.953, suggesting better predictive accuracy compared to the GBDT model. However, the improvement in accuracy came at the cost of a longer training time of 1069.031 seconds. The model size was comparable to the GBDT model, at 10.0200 MB. This indicates that while the random forest model provides better predictions, it requires more computational resources and time to train. Finally, the stacked ensemble model exhibited the best predictive performance with an RMSE of 0.952. Notably, the training time for the ensemble model was only 22.192 seconds, making it the fastest model to train. The model size was slightly larger at 10.0613 MB, but this increase is negligible.
+
+Out of all the models, the ensemble model emerged as the most effective approach, achieving the lowest RMSE and it was the fastest to train, significantly reducing computational time compared to both the gradient boosting and random forest models. The slight increase in model size is a minor trade-off for the substantial gains in accuracy and efficiency.
+
+\pagebreak
+
+## Neural Networks
+Finally, I explored the effectiveness of Neural Networks. In order to run a neural network model, I needed to do some work to wrangle the data into the correct format for processing.
+
+To understand the latent representations within my models, I bound the data back together into one dataset, and created a dense column comprising of the movieIDs. The embedding layers map these categorical variables to dense vectors in a continuous space, where similar movies have similar vector representations. Without a dense representation of movie IDs, the embedding layers would not be able to effectively learn meaningful representations and patterns within the movie data. Furthermore, the model expects sequential mapping of inputs. In the context of the movieId's, a sequential representation ensures that the model can learn meaningful relationships between consecutive IDs, which might correspond to similar or related movies. This is why we must recombine the data into a single set before creating dense layers, and subsequently divide it back into a test and training set later in the process. This is opposed to creating dense layers after the data has been divided, which results in inconsistencies in the dense data layer, which prevents neural networks from finding meaningful patterns.
+
+To do this I created indices for the training set. I selected rows from the ratings dataset based on the sampled indices to create the training dataset. I selected rows not included in the training indices to create the validation dataset. I divided the relevant variables into training and validation matrices for processing, and finally, I set the dimensionality of the embedding layer.
+
+```{r, echo=FALSE, null_prefix =TRUE}
+suppressMessages({
+  # Combine final_holdout_test back into edx.
+  full_data <- rbind(edx, final_holdout_test)
+  
+  # Neural Networks .
+  dense_movies <- full_data %>% select(movieId) %>% distinct() %>% rowid_to_column()
+  movie_data <- full_data %>% dplyr::inner_join(dense_movies) %>% dplyr::rename(movieIdDense = rowid)
+  ratings <- movie_data %>% inner_join(full_data) %>% select(userId, movieIdDense, rating, title, genres)
+  
+  # Write.csv(movie_data).
+  max_rating <- ratings %>% summarise(max_rating = max(rating)) %>% pull()
+  min_rating <- ratings %>% summarise(min_rating = min(rating)) %>% pull()
+  
+  n_movies <- ratings %>% select(movieIdDense) %>% distinct() %>% nrow()
+  n_users <- ratings %>% select(userId) %>% distinct() %>% nrow()
+  
+  train_indices <- sample(1:nrow(ratings), 0.9 * nrow(ratings))
+  train_ratings <- ratings[train_indices,]
+  valid_ratings <- ratings[-train_indices,]
+  
+  x_train <- train_ratings %>% select(c(userId, movieIdDense)) %>% as.matrix()
+  y_train <- train_ratings %>% select(rating) %>% as.matrix()
+  x_final_holdout_test <- valid_ratings %>% select(c(userId, movieIdDense)) %>% as.matrix()
+  y_final_holdout_test <- valid_ratings %>% select(rating) %>% as.matrix()
+  
+  embedding_dim <- 50
+  
+})
+```
+
+The next steps involved building out the model. 
+
+I used the Keras package from TensorFlow. Originally, Keras was a separate library, but it was integrated into TensorFlow 1.4 as its official high-level neural networks API. I need to use the keras_model_custom, because I'm using more than one variable. Furthermore, because TensorFlow has been written in Python, R must use reticulate to convert the code into Python for it to be processed. Therefore, I used an objected orientated approach to build the model. 
+
+First an embedding layer is defined for users and movies. Embedding layers are used to map users and movies to dense vectors of fixed size outlined using the embedding_dim. These vectors represent users and movies in a lower-dimensional space, capturing latent features that are learned during training. Latent factors are essentially hidden patterns in the data, which might represent aspects such as genre, style, cast, or even abstract qualities like emotional tone or pace. This initial step helps in finding patterns and similarities between users and movies.
+
+Then bias embeddings are added for users and movie, which account for individual user and movie biases that can influence ratings. For example, some users might generally give higher ratings while some movies might consistently receive lower ratings regardless of the user. Adding bias embeddings helps in capturing these tendencies and improving the accuracy of predictions.
+
+Then I created dropout layers to prevent overfitting. The dropout layers randomly set a fraction of input units to zero during training. This helps prevent overfitting by ensuring that the model does not become too reliant on specific neurons, promoting the learning of more robust features that generalise better to new data.
+
+Next, the lambda layers are defined for calculating dot product and adding biases. Lambda layers are used to implement custom operations within the model. The first lambda layer computes the dot product of user and movie embeddings, representing the interaction between a specific user and movie. The dot product is a mathematical operation that takes two equal-length sequences of numbers (in this case, the embeddings of users and movies) and returns a single number. It is calculated by multiplying corresponding elements of the vectors and then summing these products. For example, if the user embedding is $[u_1, u_2 ,…,u_n]$ and the movie embedding is $[m_1, m_2 ,…,m_n]$ the dot product is computed as $u_1 ​ m_1 + u_2 ​ m_2 +…+ u_n, ​ m_n$. This result quantifies the similarity or interaction strength between the user and the movie based on their latent features. The second lambda layer adds the user and movie biases to this dot product, refining the prediction by incorporating these additional influences. Bias terms adjust the baseline predictions for individual users and movies, accounting for their inherent tendencies (e.g., a user's general preference for higher ratings or a movie's overall average rating). This adjustment helps produce more accurate and personalised rating predictions.
+
+Then another lambda layer is defined to scale the output to the desired rating range. The final lambda layer scales the output of the previous layer to the desired rating range (e.g., 1 to 5). This ensures that the predicted ratings are within a realistic and expected range, making the predictions more meaningful and comparable to the actual ratings.
+
+Now that the model has been defined, it needs to be compiled, which involves specifying the loss function and the optimiser. Mean Squared Error (MSE) is chosen as the loss function because it measures the average squared difference between predicted and actual ratings, providing a clear measure of prediction accuracy. MSE is particularly effective in regression tasks like this one, where the goal is to predict a continuous output (movie ratings). By squaring the differences, MSE penalises larger errors more heavily, encouraging the model to make accurate predictions. This can be contrasted with Mean Absolute Error (MAE), which measures the average absolute differences. While MAE is robust to outliers and provides a linear penalty for errors, it does not penalise large errors as strongly as MSE, making it less generalised, potentially leading to less precise predictions on unseen data sets.
+
+The Adam optimizer was selected for its efficiency and effectiveness in training deep learning models. Adam (short for Adaptive Moment Estimation) combines the benefits of two other popular optimisers: AdaGrad and RMSProp. It adapts the learning rate for each parameter individually by computing adaptive learning rates from estimates of first and second moments of the gradients. This makes Adam particularly well-suited for problems with sparse gradients or noisy data. Compared to the standard Stochastic Gradient Descent (SGD), which uses a single learning rate for all parameters and requires careful tuning, Adam is more robust and often converges faster. Another alternative, RMSProp, also adapts learning rates but does not incorporate momentum, which can slow down convergence in some cases. Adam's combination of adaptive learning rates and momentum often results in faster convergence and better performance.
+
+Training the model involves using the training data to learn the parameters (embeddings and biases) that minimise the loss function. Validation data is used to monitor the model's performance on unseen data, ensuring that it generalises well. Early stopping is a callback that stops training when the validation performance stops improving, preventing overfitting and saving computational resources.
+
+I then stored the variables in a single object (history) and run the fit function to fit the model to the data. Specifically, I stored information about the training process, including the loss and metric values for each epoch for both the training and validation data. This information can be used to analyse the model's learning curve and diagnose potential issues like overfitting or underfitting.
+
+The x_train and y_train variables are the training data inputs and their corresponding labels. x_train contains the user-movie pairs, and y_train contains the actual ratings given by users to movies. Each epoch is one complete pass through the entire training dataset. Setting epochs = 10 means the model will iterate through the training data 10 times. Multiple epochs allow the model to learn and adjust its parameters incrementally, improving prediction accuracy. 
+
+The batch size specifies the number of samples per gradient update. Instead of updating the model parameters after each training sample (which can be noisy and slow) or after all samples (which can be slow and may not fit in memory), mini-batch gradient descent updates the model parameters after every 32 samples. This approach balances efficiency and performance, helping to smooth out updates and speeding up the training process.
+
+Increasing the batch size can lead to more stable and accurate gradient estimates since each update is based on a larger sample of data. This can result in faster convergence and improved utilisation of hardware such as GPUs, which are optimised for parallel processing. However, larger batch sizes require more memory and can potentially lead to poorer generalisation as the model might overfit to the training data more quickly.
+
+On the other hand decreasing the batch size results in noisier updates, since each update is based on fewer samples. This can act as a form of regularisation, potentially improving generalisation and reducing the risk of overfitting. Smaller batch sizes also require less memory, making them suitable for training on hardware with limited resources. However, training with very small batch sizes can be slower and might lead to less stable convergence. Choosing an appropriate batch size is crucial for balancing memory usage, training speed, and model generalisation. I chose batch 32 after I ran multiple iterations and observed performance and available computational resources.
+
+The x_valid, y_valid data is used to evaluate the model's performance during training. By providing validation data, the model can be evaluated on unseen data at the end of each epoch. This helps monitor overfitting and model generalisation. x_valid contains validation user-movie pairs, and y_valid contains the actual validation ratings.
+
+I added a callback function to stop training if the performance did not improve after a specified number of epochs. This prevents overfitting and saves computational resources by not continuing to train when no improvement is seen. Finally, predictions are made on the validation set using the trained model. Root Mean Squared Error (RMSE) is calculated between predicted ratings and actual ratings (y_valid).
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Calculate training time.
+training_time_complex_dot <- system.time({
+  
+complex_dot_model <- function(embedding_dim,
+                              n_users,
+                              n_movies,
+                              max_rating,
+                              min_rating,
+                              input_dim = 75000,
+                              name = "dot_with_bias") {
+  keras_model_custom(name = name, function(self) {
+    
+    self$user_embedding <-
+      layer_embedding(input_dim = input_dim,
+                      output_dim = embedding_dim,
+                      name = "user_embedding")
+    self$movie_embedding <-
+      layer_embedding(input_dim = input_dim,
+                      output_dim = embedding_dim,
+                      name = "movie_embedding")
+    self$user_bias <-
+      layer_embedding(input_dim = input_dim,
+                      output_dim = 1,
+                      name = "user_bias")
+    self$movie_bias <-
+      layer_embedding(input_dim = input_dim,
+                      output_dim = 1,
+                      name = "movie_bias")
+    
+    self$user_dropout <- layer_dropout(rate = 0.2)
+    self$movie_dropout <- layer_dropout(rate = 0.4)
+    
+    self$dot <-
+      layer_lambda(
+        f = function(x)
+          k_batch_dot(x[[1]], x[[2]], axes = 2),
+        name = "dot"
+      )
+    
+    self$dot_bias <-
+      layer_lambda(
+        f = function(x)
+          k_sigmoid(x[[1]] + x[[2]] + x[[3]]),
+        name = "dot_bias"
+      )
+    
+    self$pred <- layer_lambda(
+      f = function(x)
+        x * (self$max_rating - self$min_rating) + self$min_rating,
+      name = "pred"
+    )
+    
+    self$max_rating <- max_rating
+    self$min_rating <- min_rating
+    
+    function(x, mask = NULL, training = TRUE) {
+      users <- x[, 1]
+      movies <- x[, 2]
+      user_embedding <- self$user_embedding(users) %>% self$user_dropout()
+      movie_embedding <- self$movie_embedding(movies) %>% self$movie_dropout()
+      dot <- self$dot(list(user_embedding, movie_embedding))
+      dot_bias <- self$dot_bias(list(dot, self$user_bias(users), self$movie_bias(movies)))
+      self$pred(dot_bias)
+    }
+  })
+}
+
+model <- complex_dot_model(embedding_dim,
+                           n_users,
+                           n_movies,
+                           max_rating,
+                           min_rating)
+
+model %>% compile(
+  loss = "mse",
+  optimizer = "adam"
+)
+
+history <- model %>% fit(
+  x_train,
+  y_train,
+  epochs = 10,
+  batch_size = 32,
+  validation_data = list(x_final_holdout_test, y_final_holdout_test),
+  callbacks = list(callback_early_stopping(patience = 2))
+)
+
+# Get predicted ratings on the validation set.
+predicted_ratings <- model %>% predict(x_final_holdout_test)
+
+rmse_nn_complex_dot <- RMSE(predicted_ratings, y_final_holdout_test)
+  
+#Calculate model size.
+model_size_complex_dot <<- round(
+  sum(
+    object.size(complex_dot_model),
+    object.size(model),
+    object.size(history),
+    object.size(predicted_ratings),
+    object.size(rmse_nn_complex_dot)
+  ) / (1024^2),  # Convert to MB.
+  4
+)
+
+})
+
+# Save Complex Dot Model results.
+saveRDS(list(rmse = rmse_nn_complex_dot, time = training_time_complex_dot, size = model_size_complex_dot[1]), file = "complex_dot_model_results.rds")
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load Complex Dot Model results.
+complex_dot_model_results <- readRDS(file.path(workingDirectory, "complex_dot_model_results.rds"))
+
+#Print results. 
+cat("RMSE for Complex Dot Model: ", complex_dot_model_results$rmse, "\n")
+cat("Training Time:", round(complex_dot_model_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", complex_dot_model_results$size, "MB", "\n")
+
+# Clear unused memory.
+invisible(gc())
+```
+Using the Complex Dot Model I was able to achieve a RMSE score of 0.8302. 
+
+Next I experimented by simplifying the custom lambda layers. The biases were customised using a lambda layer that also applied a sigmoid activation function to the sum of the dot product and biases. In the simplified model I used the layer_add, which simplifies the architecture and does not include the sigmoid activation. Furthermore, I added batch normalisation for user and movie embeddings before applying dropout to help in stabilising and accelerating the training process by normalising the activations.
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Calculate training time.
+training_time_simplified_dot_model <- system.time({
+  
+simplified_dot_model <- function(embedding_dim,
+                                      n_users,
+                                      n_movies,
+                                      max_rating,
+                                      min_rating,
+                                      input_dim = 75000,
+                                      name = "dot_with_bias") {
+  keras_model_custom(name = name, function(self) {
+    
+    self$user_embedding <-
+      layer_embedding(input_dim = input_dim,
+                      output_dim = embedding_dim,
+                      name = "user_embedding")
+    self$movie_embedding <-
+      layer_embedding(input_dim = input_dim,
+                      output_dim = embedding_dim,
+                      name = "movie_embedding")
+    self$user_bias <-
+      layer_embedding(input_dim = input_dim,
+                      output_dim = 1,
+                      name = "user_bias")
+    self$movie_bias <-
+      layer_embedding(input_dim = input_dim,
+                      output_dim = 1,
+                      name = "movie_bias")
+    
+    self$user_dropout <- layer_dropout(rate = 0.2)  
+    self$movie_dropout <- layer_dropout(rate = 0.4) 
+    self$batch_norm_user <- layer_batch_normalization()
+    self$batch_norm_movie <- layer_batch_normalization()
+    self$dot <- layer_dot(axes = 1, name = "dot")
+    self$dot_bias <-
+      layer_add(name = "dot_bias")
+    
+    self$max_rating <- max_rating
+    self$min_rating <- min_rating
+    
+    function(x, mask = NULL, training = TRUE) {
+      users <- x[, 1]
+      movies <- x[, 2]
+      user_embedding <- self$user_embedding(users) %>% self$batch_norm_user() %>% self$user_dropout()
+      movie_embedding <- self$movie_embedding(movies) %>% self$batch_norm_movie() %>% self$movie_dropout()
+      dot <- self$dot(list(user_embedding, movie_embedding))
+      dot_bias <- self$dot_bias(list(dot, self$user_bias(users), self$movie_bias(movies)))
+      dot_bias
+      
+    }
+  })
+}
+
+
+model <- simplified_dot_model(embedding_dim,
+                                n_users,
+                                n_movies,
+                                max_rating,
+                                min_rating)
+
+model %>% compile(
+  loss = "mse",
+  optimizer = "adam"
+)
+
+history <- model %>% fit(
+  x_train,
+  y_train,
+  epochs = 10,
+  batch_size = 32,
+  validation_data = list(x_valid, y_valid),
+  callbacks = list(callback_early_stopping(patience = 2))
+)
+
+# Get predicted ratings on the validation set.
+predicted_ratings <- model %>% predict(x_valid)
+
+simplified_dot_model_rmse <- RMSE(predicted_ratings, y_valid)
+
+# Calculate model size.
+  model_size_simplified_dot_model <<- round(
+    sum(
+      object.size(simplified_dot_model),
+      object.size(model),
+      object.size(history),
+      object.size(predicted_ratings),
+      object.size(rmse_nn_complex_dot)
+    ) / (1024^2),  # Convert to MB
+    4
+  )
+
+})
+
+# Save Simple Dot Model results.
+saveRDS(list(rmse = simplified_dot_model_rmse, time = training_time_simplified_dot_model, size = model_size_simplified_dot_model[1]), file = "simple_dot_model_results.rds")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load Simple Dot Model results.
+simple_dot_model_results <- readRDS(file.path(workingDirectory, "simple_dot_model_results.rds"))
+
+#Print results. 
+cat("RMSE for Simple Dot Model: ", simple_dot_model_results$rmse, "\n")
+cat("Training Time:", round(simple_dot_model_results$time["elapsed"], 4), "sec\n")
+cat("Model size:", simple_dot_model_results$size, "MB", "\n")
+
+# Clear unused memory.
+invisible(gc())
+```
+Using the Simplified Dot Model I was able to achieve a RMSE score of 0.8025. 
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Summarise the results for the Neural Networks.
+rmse_results <- data.frame(
+  Method = c("Complex Dot NN", "Simplified Dot NN"),
+  
+  RMSE = c(complex_dot_model_results$rmse, simple_dot_model_results$rmse),
+  
+  Time = c(complex_dot_model_results$time["elapsed"], simple_dot_model_results$time["elapsed"]),
+  
+  Size = c(complex_dot_model_results$size, simple_dot_model_results$size)
+  
+)
+
+# Rename the columns to replace full stops with spaces.
+colnames(rmse_results) <- gsub("Time", "Time (sec)", colnames(rmse_results))
+colnames(rmse_results) <- gsub("Size", "Size (MB)", colnames(rmse_results))
+
+# Display RMSE results in a PDF-compatible table
+kable(
+  rmse_results, 
+  format = "latex", 
+  booktabs = TRUE, 
+  caption = "RMSE Results for Neural Networks"
+) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position", "scale_down"),
+    position = "center"
+  ) %>%
+  add_header_above(c("Neural Networks" = 4))
+```
+Ultimately, neural networks provide a large amount of tunable parameters, and therefore it stands to reason that a lower RMSE could be possible with a different set of settings. However, it's high level of customisation and complexity poses problems. Iterating through different model settings is time consuming, and makes understanding exactly how the models are working very difficult. This has been described as the "black box problem", which refers to the lack of transparency and interpretability of AI algorithms. It is often difficult to describe mathematically what criteria the systems are actually using to make their predictions, which makes it challenging to identify and rectify errors or biases. Moreover, scaling neural networks is resource heavy, time consuming and potentially volatile given the lack of transparency. 
+
+Now that I've reviewed multiple models, I can choose the most efficient one to make predictions and understand its performance in more detail using cross-validation. This technique trains and tests the model on subsets of the data, called folds. The process is repeated multiple times, each time using a different fold for evaluation, and the results are recorded over time to obtain the model's performance as it trains. This way, I can obtain RMSE values throughout the training process to understand where I'm getting the most value for resource.
+\
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+## Before performing Matrix Factorisation (MF) method, clear unused memory.
+invisible(gc())
+
+# Matrix Factorisation with parallel stochastic gradient descent.
+# Calculate training time.
+# Create copies of training test and validation sets, retaining only essential columns.
+# - "genres," "title," and "timestamp" are excluded.
+training_time_disk_matrix_factorisation <- system.time({
+  
+edx.copy <- edx %>%
+  select(-c("genres", "title", "timestamp"))
+names(edx.copy) <- c("user", "item", "rating")
+
+valid.copy <- final_holdout_test %>%
+  select(-c("genres", "title", "timestamp"))
+names(valid.copy) <- c("user", "item", "rating")
+
+# Convert edx.copy and valid.copy to matrices.
+edx.copy <- as.matrix(edx.copy)
+valid.copy <- as.matrix(valid.copy)
+
+# Write edx.copy and valid.copy tables to disk.
+write.table(edx.copy, file = "trainset.txt", sep = " ", row.names = FALSE, col.names = FALSE)
+write.table(valid.copy, file = "validset.txt", sep = " ", row.names = FALSE, col.names = FALSE)
+
+# Specify data sets from files on the hard disk using data_file().
+train_set <- file.path(workingDirectory, "trainset.txt")
+valid_set <- file.path(workingDirectory, "validset.txt")
+
+# Build a Recommender object for Matrix Factorisation.
+recommender <- Reco()
+
+# Optimise/tune the recommender model.
+opts <- recommender$tune(train_set, opts = list(
+  dim = c(1:20), lrate = c(0.05),
+  nthread = 4, costp_l1 = 0,
+  costq_l1 = 0,
+  niter = 50, nfold = 20,
+  verbose = FALSE
+))
+
+# Train the recommender model.
+recommender$train(train_set, opts = c(opts$min, nthread = 4, niter = 100, verbose = FALSE))
+
+# Display the training set and optimisation options.
+train_set
+opts
+
+# Make predictions on the validation set and calculate RMSE.
+pred_file <- tempfile()
+recommender$predict(valid_set, out_file(pred_file))
+
+# Matrix Factorisation: Display the first 10 predicted values.
+print(scan(pred_file, n = 10))
+
+# Read actual ratings from the validation set.
+scores_real <- read.table("validset.txt", header = FALSE, sep = " ")$V3
+
+# Read predicted ratings from the saved prediction file.
+scores_pred <- scan(pred_file)
+
+# Remove edx.copy and valid.copy objects to free up memory.
+rm(edx.copy, valid.copy)
+
+# Calculate the RMSE between actual and predicted ratings.
+rmse_mf_opt <- RMSE(scores_real, scores_pred)
+rmse_mf_opt
+
+```
+
+```{r, echo=FALSE, null_prefix =TRUE, eval=FALSE}
+# Train the recommender model with verbose output for the first 30 iterations.
+output <- capture.output(recommender$train(train_set, opts = c(opts$min, nthread = 4, niter = 30, verbose = TRUE)))
+
+output <- output[-1]
+output <- trimws(output)
+
+# Extract data using regular expressions.
+output_df <- do.call(rbind, strsplit(output, "\\s+"))
+colnames(output_df) <- c("iter", "tr_rmse", "obj")
+
+# Convert columns to appropriate types.
+output_df <- as.data.frame(output_df, stringsAsFactors = FALSE)
+output_df$iter <- as.integer(output_df$iter)
+output_df$tr_rmse <- as.numeric(output_df$tr_rmse)
+output_df$obj <- as.numeric(output_df$obj)
+
+# Save the data frame to an RData file.
+save(output_df, file = "trainRmse_MovieLens.RData")
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Load the model.
+load("trainRmse_MovieLens.RData")
+
+# Specify the iteration number for analysis.
+iter.line <- 15
+
+# Extract the training RMSE at the specified iteration.
+training_rmse.line <- output_df$tr_rmse[which(output_df$iter == 15)]
+
+# Plot the training RMSE over iterations.
+suppressMessages({
+  output_df %>%
+    ggplot(aes(x = iter, y = tr_rmse)) +
+    geom_point(size = 3, shape = 19) +
+    geom_smooth(aes(x = iter, y = tr_rmse), formula = y ~ x, method = "loess") +
+    geom_segment(x = 0, xend = iter.line, y = training_rmse.line, yend = training_rmse.line, color = "orange", lty = 2) +
+    geom_segment(x = iter.line, xend = iter.line, y = 0, yend = training_rmse.line, color = "orange", lty = 2) +
+    annotate(
+      geom = "label", x = iter.line, y = 0.8350, color = 5,
+      label = paste("x =", round(iter.line, 0), "\ny =", round(training_rmse.line, 4))
+    ) +
+    labs(
+      title = "RMSE for different number of latent factors",
+      caption = "Based on the output of r$train(train_set, opts = c(opts$min, nthread = 4, niter = 100), \n show just first 30 iterations)"
+    ) +
+    ylab("RMSE") +
+    xlab("Latent factors")
+})
+```
+The figure above shows the amount of latent factors needed to achieve a subset of RMSE values. The more latent factors used, the more computationally expensive the models are. I can see that there is a sharp decline in RMSE values up until around 0.8. Then there is a progressively slower decrease in RMSE values, compared to the amount of resource needed. To obtain an RMSE of below 0.8 I only need 15 latent factors. Therefore, I could look to optimise my model to achieve a much more efficient RMSE, using far less resource. 
+
+ \pagebreak
+ 
+# Making Predictions
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Choose a random user from the testing data.
+random_user <- sample(unique(final_holdout_test$userId), 1)
+
+# Ensure user is not empty.
+if (length(random_user) == 0) {
+  stop("No users found in the testing data")
+}
+
+# List all unique movie IDs.
+all_movies <- unique(edx_title_year$movieId)
+
+# Create a data frame for the user with all movie IDs (the rating is set to NA or 0 for prediction purposes).
+user_movies <- data.frame(user = random_user, item = all_movies, rating = NA)
+
+# Write the user_movies data frame to a temporary file for prediction using the recosystem package.
+user_file <- tempfile()
+write.table(user_movies[, c("user", "item")], file = user_file, sep = " ", row.names = FALSE, col.names = FALSE)
+
+# Create a temporary file to store predictions using the recosystem package.
+pred_file <- tempfile()
+  
+# Load the best model from the saved RDS file
+recommender <- readRDS("matrix_factorization_model_recommender.rds")
+
+# Make predictions using the trained Reco model.
+capture.output(
+  recommender$predict(data_file(user_file), out_file(pred_file)),
+  file = nullfile()
+) 
+# Read predicted ratings from the temporary file.
+predicted_ratings <- read.table(pred_file, header = FALSE)$V1
+
+# Combine the predicted ratings with movie IDs.
+user_predictions <- data.frame(movieId = all_movies, predicted_rating = predicted_ratings)
+
+# Sort by predicted rating in descending order to get top 10 recommendations based on movieId.
+top_10_recommendations <- user_predictions %>%
+  arrange(desc(predicted_rating)) %>%
+  slice(1:10)
+
+# Sort by predicted rating in ascending order to get bottom 10 recommendations based on movieId.
+bottom_10_recommendations <- user_predictions %>%
+  arrange(predicted_rating) %>%
+  slice(1:10)
+
+# Add back movie titles:
+# Remove duplicate titles keeping only the first occurrence.
+edx_title_year_unique <- edx_title_year %>%
+  distinct(movieId, .keep_all = TRUE)
+
+# Perform an inner join on predicted ratings.
+top_10_recommendations_title <- inner_join(top_10_recommendations, edx_title_year_unique, by = "movieId") %>% 
+  mutate(predicted_rating = round(predicted_rating, 2))
+
+bottom_10_recommendations_title <- inner_join(bottom_10_recommendations, edx_title_year_unique, by = "movieId") %>% 
+  mutate(predicted_rating = round(predicted_rating, 2))
+
+# Remove the extra columns from the joined_data.
+top_10_recommendations_title <- top_10_recommendations_title %>%
+  select(-userId, -rating, -timestamp)
+
+bottom_10_recommendations_title <- bottom_10_recommendations_title %>%
+  select(-userId, -rating, -timestamp)
+```
+
+```{r, echo=FALSE, null_prefix =TRUE}
+# Top Recommendations
+top_10_recommendations_title %>%
+  kable("latex", col.names = c("Movie ID", "Predicted Rating", "Title", "Genre", "Year")) %>%
+  add_header_above(setNames(5, paste("Top Picks for User", random_user))) %>% 
+  kable_styling(
+    latex_options = c("striped", "condensed", "scale_down"), 
+    full_width = FALSE
+  )
+
+# Bottom Recommendations
+bottom_10_recommendations_title %>%
+  kable("latex", col.names = c("Movie ID", "Predicted Rating", "Title", "Genre", "Year"))  %>%
+  add_header_above(setNames(5, paste("Bottom Picks for User", random_user))) %>% 
+  kable_styling(
+    latex_options = c("striped", "condensed", "scale_down"), 
+    full_width = FALSE
+  )
+```
+Finally, I used my best model to predict and display the top and bottom 10 movies for a specific user, to show the recommendation model in an applied setting. These results could be displayed on a webpage, or sent in an email, providing real value to an end user.
+
+\pagebreak
+
+# Conclusion
+
+My report on recommendation algorithms examines various models, including Linear Regressions, Matrix Factorisation, Ensemble Methods, and Neural Networks. I also explored several libraries, infrastructural frameworks, and services to optimise model training.
+
+Model accuracy was assessed using Root Mean Squared Error (RMSE), a common metric for its interpretability and its ability to penalise larger errors more severely. Infrastructural load was analysed based on training time and memory usage. Time reflects computational resources, which are essentially tied to energy consumption. Although all models were tested locally, tools like Spark and H2O create clusters to distribute computational resources across multiple nodes, speeding up model training and data processing. Therefore, time should be adjusted based on the hardware used to provide a more accurate assessment of energy consumption. Moreover, time itself is a valuable resource, and can be analysed in isolation as shorter training times are desirable.
+
+# Recommendations
+
+Based on the analysis, the following models are recommended:
+
+Linear Regression with Movie + User + Genre Effects: This model achieved an RMSE of 0.8657, a training time of 0.209 seconds, and used 8.6289 MB of memory. Despite its simplicity, it provides reasonably accurate movie rating predictions with very fast training times and minimal memory usage.
+
+Matrix Factorisation using Disk Memory: If accuracy is the primary concern, this model is the best choice with the lowest RMSE of 0.7834. However, it requires a long training time of 2155.302 seconds and uses 793.4668 MB of memory.
+
+Alternating Least Squares (ALS) using Spark: This model offers a balanced option with an RMSE of 0.8446, a training time of 90.368 seconds, and a memory usage of 361.5343 MB. Due to hardware constraints, only a subset of the data was used, and a more accurate RMSE may be achieved with additional resources. Furthermore, there is potential for ALS to outperform Matrix Factorisation in all metrics given its current performance and resource usage.
+
+The limitations of this report are primarily related to hardware constraints. The study would benefit from being conducted on a more powerful machine. Additionally, there is a lack of resources to measure computational and energy consumption, which are crucial for large-scale model training. A more detailed analysis of hardware and energy requirements, and how these scale with hardware and data, would further enhance the findings.
+
+Another limitation to consider is the tendency for recommendation systems to overgeneralise with widely admired or widely disliked movie titles. Social norms can influence individual ratings; for instance, if a movie is well-respected, people might rate it more highly due to its reputation, leading to its more frequent recommendation. This can skew recommendations towards popular movies, while potentially overlooking more personalised suggestions.
+
+To address this issue, one approach could be to introduce a subcategory for recommendations, such as "Movies We Think You'll Like, That Everyone Loves." This allows for the inclusion of highly-rated films while also leaving room for further subcategorised recommendations that are more tailored to the user's individual preferences and perceived uniqueness.
